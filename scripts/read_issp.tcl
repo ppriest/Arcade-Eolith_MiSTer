@@ -17,9 +17,28 @@
 # (signed 16), hex or bit. Bit numbers index the probe bus as the RTL
 # concatenates it. Add an entry to the `switch` further down for each table.
 # By convention source bit 0 pulsed is the counter clear.
+# F and C are rtl/debug/eo_perf.sv's (Eolith.sv, the DEBUG_ISSP block); F's source bit 0 clears both.
 set fields_F {
     {frames           0  15 dec}
+    {flips           16  31 dec}
+    {gap1            32  47 dec}
+    {gap2            48  63 dec}
+    {gap3            64  79 dec}
+    {gap4p           80  95 dec}
+    {max_gap         96 103 dec}
+    {last_gap       104 111 dec}
+    {board          124 125 dec}
+    {core_reset     126 126 bit}
     {pll_locked     127 127 bit}
+}
+set fields_C {
+    {wait_last        0  19 dec}
+    {wait_min        20  39 dec}
+    {busy_frames     40  55 dec}
+    {instr_last      56  79 dec}
+    {dmiss_last      80  95 dec}
+    {imiss_last      96 111 dec}
+    {polls_last     112 127 dec}
 }
 # ---------------------------------------------------------------------------
 
@@ -86,6 +105,7 @@ if {$want ne ""} {
 # than guesses.
 switch -- $inst_id {
     F       { set fields $fields_F }
+    C       { set fields $fields_C }
     default {
         puts "instance id '$inst_id' has no field table -- add one before reading it"
         exit 1

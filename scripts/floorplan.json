@@ -1,0 +1,11 @@
+{"groups": [
+    {"name": "E1 CPU",             "match": "emu\\|u_main\\|u_cpu",    "color": "#e6194b"},
+    {"name": "Memory unit",        "match": "emu\\|u_main\\|u_mem",    "color": "#f58231"},
+    {"name": "Video / VRAM",       "match": "emu\\|u_main\\|u_video",  "color": "#3cb44b"},
+    {"name": "Main board I/O",     "match": "emu\\|u_main",            "color": "#ffe119"},
+    {"name": "QS1000",             "match": "emu\\|u_snd",             "color": "#4363d8"},
+    {"name": "Sound CPU",          "match": "emu\\|u_sndcpu",          "color": "#911eb4"},
+    {"name": "M6295",              "match": "emu\\|u_oki",             "color": "#46f0f0"},
+    {"name": "SDRAM / loader",     "match": "emu\\|u_(sdram|ldr|dl)",  "color": "#f032e6"},
+    {"name": "Video out / hps_io", "match": "emu\\|(arcade_video|hps_io|video_freak)", "color": "#bcf60c"}
+]}

@@ -924,6 +924,19 @@ and spending one more cycle in the access state machine closed it (+0.011 ns); t
 six clocks, so the cycle is free. A peripheral hanging combinationally off the CPU bus is
 structural; a multicycle over it is a promise the design does not make.
 
+### [Eolith] A task that writes a register, called from many branches, builds one selector per call site
+
+`e1_pipe`'s register-write queue push was a task inlined at over a hundred call sites. Each site is a
+conditional assignment to the queue entries and to the "last value pushed" register that the operand
+forwarding read, and Quartus built a priority chain of them: nine LUTs between an ALU result and a
+queue entry. A site's queue position was the count of pushes made before it in the same clock, so a
+data compare in one branch (STW.S's `ls_dreg < G[18]`) decided where a later push landed. Build
+`7b80205` missed by 0.575 ns, its 15 worst paths all into one queue entry. Pushing the late value
+once, as the clock's last assignment, at a position known at the start of the clock, and building the
+forwarded value from only the two cases that use it took the same seed to +0.203 (`449df7c`), then
++0.867 ns (`3f882db`), with fewer ALMs. Seeds (-0.078 to -0.575 ns) and fitter modes had not closed it
+(`AGGRESSIVE PERFORMANCE` did not fit).
+
 ## CPU cores (TG68K.C, T80, vendored CPUs)
 
 ### Budget for the 68k core to be the Fmax-limiting block
@@ -1010,6 +1023,18 @@ risked: the level-1 autovector shares its target with bus error and illegal inst
 target is the reset entry. Not proven that the extra IRQ caused the restart -- a scan found no
 instruction lowering the mask to 0. Dump the vector table before deciding a board's interrupts; an
 ack address that is also an input port must acknowledge on writes only.
+
+### [Eolith] A CPU vendored from another core can carry that core's memory map
+
+`e1_pipe` (Vamphalf) holds `bus_*` through the memory unit's store-update clock (`S_WLOOK`) only when
+the store's address is one of Vamphalf's cached regions (`ST_MWAIT`); elsewhere it issues a two-access
+job's second access in the ack clock. On the Gradation 2D, work RAM is also at 0x40000000, so an
+`STD.D` there updated the D-cache with the second access's address and data and the first word stayed
+stale. The PCs agreed for 26 instructions after the bad read; a data-access comparison against MAME's
+bus trace (`sys_tb +bustrace`) named it: hidnctch access 57,532, a read of 0x40001654 returning
+0x80000001 where MAME read 0x00000001 after the `STD.D` 34 instructions earlier. The memory unit now
+latches the store for its update (`wl_*`, `gen_eo_cpumem.py`). Grep a reused CPU for address constants
+before giving it a new map, and compare data accesses, not only PCs.
 
 ## Quartus synthesis gotchas (not visible in ModelSim)
 

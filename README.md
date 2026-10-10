@@ -1,9 +1,10 @@
-# {{HARDWARE_NAME}} core for MiSTer
+# Eolith core for MiSTer
 
-A MiSTer FPGA core for {{MANUFACTURER}}'s {{HARDWARE_NAME}} arcade hardware (MAME's
-`{{MAME_DRIVER}}`), built with Quartus Prime 17.0.2 Lite for the DE10-nano.
+A MiSTer FPGA core for Eolith's Hyperstone arcade boards (MAME's `vegaeo.cpp`, `eolith.cpp` and
+`eolith16.cpp`), built with Quartus Prime 17.0.2 Lite for the DE10-nano.
 
-**Status: {{STATUS_ONE_LINE}}.**
+**Status: 22 sets on three boards. Crazy War, Hidden Catch and Hidden Catch 3 play on the board; a
+quick test of a number of the other sets ran them all.**
 
 ## Contents
 
@@ -29,91 +30,133 @@ A MiSTer FPGA core for {{MANUFACTURER}}'s {{HARDWARE_NAME}} arcade hardware (MAM
 
 ## History
 
-{{HISTORY}}
-<!-- One paragraph per release or milestone, newest first. Name the commit for anything that
-     ran on hardware. "No release yet" is a valid entry. -->
+* **20261010** (`releases/Arcade-Eolith_20261010.rbf`, commit `3f882db`, fitter seed 2)
+  * **Alpha release** : 22 sets on the Vega, Gradation 2D and `eolith16` boards
+  * Crazy War, Hidden Catch and Hidden Catch 3 played on the board; a quick test of a number of the
+    other sets on this build ran them all
+  * Fast ROM loading, EEPROM / NVRAM saving, DIP switches, flip screen, Pause, stereo mix
+  * Hidden Catch 3's light pens from the analog sticks, with a cross drawn for each pen
 
 ## Games
 
-{{SCOPE_ONE_PARAGRAPH}}
-<!-- Which board types / machine configs the core targets, how many sets, SDRAM size they need. -->
+Three boards, each a Hyperstone CPU drawing into a double-buffered frame buffer, with no sprites or
+tiles: the Vega (Crazy War: GMS30C2132, 8-bit pixels through a palette, a QS1000 sound board on a
+latch), the Gradation 2D (the `eolith.cpp` sets: E1-32N, 15-bit RGB pixels, an i8032 sound CPU driving
+a QS1000 over a serial line, a 93C66 EEPROM) and the `eolith16` board (KlonDike+: E1-16T, 8-bit pixels
+through a fixed palette, an OKI M6295). The board is chosen by the `.mra`. A 64 MB SDRAM module is
+required.
 
 ### Supported
 
-Sets with an `.mra` in `releases/`. {{WHICH_HAVE_RUN_ON_HARDWARE}}
+Sets with an `.mra` in `releases/`. Crazy War, Hidden Catch and Hidden Catch 3 have been played on the
+board; a quick test of a number of the others on the release build ran them all (which ones was not
+recorded).
 
-| Name | Year | Manufacturer | {{PER_CORE_COLUMNS}} | Notes |
-|-|-|-|-|-|
-{{SUPPORTED_SETS_TABLE}}
+| Name | Year | Manufacturer | Set | Board | Notes |
+|-|-|-|-|-|-|
+| Crazy War | 2002 | Eolith | `crazywar` | Vega | |
+| Hidden Catch (World) / Tul Lin Gu Lim Chat Ki '98 (Korea) (pcb ver 3.03) | 1998 | Eolith | `hidnctch` | Gradation 2D | |
+| Hidden Catch (World) / Tul Lin Gu Lim Chat Ki '98 (Korea) (pcb ver 3.02) | 1998 | Eolith | `hidnctcha` | Gradation 2D | Clone of `hidnctch` |
+| Iron Fortress | 1998 | Eolith | `ironfort` | Gradation 2D | |
+| Gongtit Jiucoi Iron Fortress (Hong Kong) | 1998 | Eolith (Excellent Competence Ltd. license) | `ironfortc` | Gradation 2D | Clone of `ironfort` |
+| Linky Pipe | 1998 | Eolith | `linkypip` | Gradation 2D | |
+| Puzzle King (Dance & Puzzle) | 1998 | Eolith | `puzzlekg` | Gradation 2D | |
+| Candy Candy | 1999 | Eolith | `candy` | Gradation 2D | IMPERFECT_GRAPHICS in MAME |
+| Hidden Catch 2 (pcb ver 3.03) (Kor/Eng) (AT89c52 protected) | 1999 | Eolith | `hidctch2` | Gradation 2D | MAME's protection patch |
+| Hidden Catch 2 (pcb ver 1.00) (Kor/Eng/Jpn/Chi) | 1999 | Eolith | `hidctch2a` | Gradation 2D | Clone of `hidctch2` |
+| Hidden Catch 2000 (AT89c52 protected) | 1999 | Eolith | `hidnc2k` | Gradation 2D | MAME's protection patch |
+| Land Breaker (World) / Miss Tang Ja Ru Gi (Korea) (pcb ver 3.02) | 1999 | Eolith | `landbrk` | Gradation 2D | |
+| Land Breaker (World) / Miss Tang Ja Ru Gi (Korea) (pcb ver 3.03) (AT89c52 protected) | 1999 | Eolith | `landbrka` | Gradation 2D | Clone of `landbrk`; MAME's protection patch |
+| Land Breaker (World) / Miss Tang Ja Ru Gi (Korea) (pcb ver 1.0) (AT89c52 protected) | 1999 | Eolith | `landbrkb` | Gradation 2D | Clone of `landbrk`; MAME's protection patch |
+| New Hidden Catch (World) / New Tul Lin Gu Lim Chat Ki '98 (Korea) (pcb ver 3.02) | 1999 | Eolith | `nhidctch` | Gradation 2D | |
+| Penfan Girls - Step1. Mild Mind (set 1) | 1999 | Eolith | `penfan` | Gradation 2D | |
+| Penfan Girls - Step1. Mild Mind (set 2) | 1999 | Eolith | `penfana` | Gradation 2D | Clone of `penfan` |
+| Hidden Catch 3 (ver 1.00 / pcb ver 3.05) | 2000 | Eolith | `hidctch3` | Gradation 2D | Light pens (Controls) |
+| Steal See | 2000 | Moov Generation / Eolith | `stealsee` | Gradation 2D | |
+| Fortress 2 Blue Arcade (World) (ver 1.01 / pcb ver 3.05) | 2001 | Eolith | `fort2b` | Gradation 2D | |
+| Fortress 2 Blue Arcade (Korea) (ver 1.00 / pcb ver 3.05) | 2001 | Eolith | `fort2ba` | Gradation 2D | Clone of `fort2b` |
+| KlonDike+ | 1999 | Eolith | `klondkp` | `eolith16` | 320 x 200 picture |
 
 ### Not yet
 
-In-scope sets the RTL does not take yet, and why.
-
 | Name | Why |
 |-|-|
-{{NOT_YET_TABLE}}
+| Raccoon World (`raccoon`) | MACHINE_NOT_WORKING in MAME |
 
 ### Out of scope for now
 
 | MAME description | Why |
 |-|-|
-{{OUT_OF_SCOPE_TABLE}}
-<!-- Reasons that count: MACHINE_NOT_WORKING in MAME, a device MAME lacks, ROM set larger than the
-     SDRAM module, a second monitor, a bootleg with different sound hardware. -->
+| BnB Arcade, Happy Tour, Touryuumon (`ghosteo.cpp`) | A 200 MHz ARM920T system-on-chip with an MMU; shares only the QS1000 with these boards |
 
 ## Hardware
 
 | Chip | Function | Status |
 |-|-|-|
-{{CHIP_TABLE}}
-<!-- One row per chip. Status says where the RTL came from (written here / vendored from X with
-     changes / MAME transcription) and what it has been checked against. -->
+| Hyperstone GMS30C2132 (Vega), E1-32N (Gradation 2D), E1-16T (`eolith16`) | Main CPU | Arcade-Vamphalf_MiSTer's pipelined `e1_pipe.sv`, written there from MAME's `e132xs`, with this core's timing changes (`rtl/e1/PROVENANCE.md`); behind Vamphalf's I- and D-caches with this core's address decode (`rtl/eo_cpumem.sv`, generated by `scripts/gen_eo_cpumem.py`) |
+| Frame buffers | Video | Written here (`rtl/eo_video.sv`): one VRAM for the three boards' pixel formats, the scan-out reading the buffer the CPU is not drawing |
+| QS1000 (8052 + 32-voice wavetable) | Sound, Vega and Gradation 2D | From Arcade-Vamphalf_MiSTer: jotego's JT8051 with changes (`rtl/qs1000/PROVENANCE.md`), the voice engine written from MAME's `qs1000.cpp`. On the Vega it reads the main CPU's latch; on the Gradation 2D its serial input |
+| i8032 | Gradation 2D sound CPU | A second JT8051, with timer 2 added (`docs/HACKS.md`) |
+| OKI M6295 | `eolith16` sound | jotego's JT6295 with Arcade-Vamphalf_MiSTer's ROM bridge and sample cache (`rtl/sound/PROVENANCE.md`) |
+| 93C66 | Settings EEPROM, Gradation 2D and `eolith16` | Written here (`rtl/eo_eeprom93cxx.sv`) from Arcade-Vamphalf_MiSTer's 93C46 model |
+| AT28C16 | Settings NVRAM, Vega | Written here (`rtl/eo_main.sv`) |
 
 ### Video timing
 
-{{VIDEO_TIMING}}
-<!-- Dot clock, dots per line, lines per frame, the resulting line and frame rates, the visible
-     area, and where the numbers come from (CRTC registers, MAME set_raw, a PCB measurement). Say
-     if MAME's declared rate differs. -->
+57.2727 MHz / 8 = 7.15909 MHz dot clock, 455 dots by 262 lines: 15.734 kHz lines, 60.05 Hz frames.
+Visible 320 x 240 (`eolith16`: 320 x 200). MAME gives no video timing (`set_refresh_hz(60)`,
+`set_size(512, 262)` are placeholders, `eolith.cpp:714-717`); the dot clock is half the boards'
+14.31818 MHz crystal by inference, and the totals are chosen (`docs/HACKS.md`). A board's notes in
+the driver give 15.64 kHz and 60 Hz measured.
 
 ## Screenshots
 
-### {{GAME}}
+### Hidden Catch
 
-![{{set}} title](docs/screenshots/{{set}}/title.png)
+![hidnctch title](docs/screenshots/hidnctch/title.png)
+
+### Crazy War
+
+![crazywar attract](docs/screenshots/crazywar/attract.png)
 
 ## Installation
 
-{{SDRAM_REQUIREMENT}}
-<!-- e.g. "A 32 MB SDRAM module is required." -->
+A 64 MB SDRAM module is required: Crazy War and 16 of the 21 `eolith.cpp` sets are larger than 32 MB.
 
 * Take the latest `*.rbf` from `releases/` and put it in `_Arcade/cores`, renamed to drop the
   `Arcade-` prefix (`Arcade-Eolith_YYYYMMDD.rbf` becomes `Eolith_YYYYMMDD.rbf`). MiSTer launches
   the highest-sorting match for `<rbf>Eolith</rbf>`, and a `Eolith_*.rbf` sorts above every
   `Arcade-Eolith_*.rbf`
 * Take the `*.mra` files and the `_alternatives` folder from `releases/` and put them in `_Arcade`
-  (or a subdirectory starting with an underscore, e.g. `_Arcade/_{{HARDWARE_NAME}}`)
-* Put the MAME merged or split ROM sets in `games/mame`{{BIOS_NOTE}}
+  (or a subdirectory starting with an underscore, e.g. `_Arcade/_Eolith`)
+* Put the MAME merged or split ROM sets in `games/mame`
 
 To run a development build instead: `python scripts/build_staged.py`, then `python scripts/deploy.py`
 with a `mister.env` (see `scripts/deploy.py`).
 
 ## Controls
 
-{{CONTROLS}}
+Joystick: Button 1 to Button 4, Start, Coin, Pause, Service Coin, Service Mode. The `.mra` names the
+buttons per game: Crazy War's button 1 is Shot, the Hidden Catch games' Mark, KlonDike+'s Pick.
+
+Hidden Catch 3: each player's left analog stick moves that player's light pen, with a cross drawn at
+its position (white for player 1, yellow for player 2); button 1 (Pen) presses it.
 
 Keyboard, MAME's defaults: arrows / R F D G, buttons LCtrl LAlt Space LShift Z X / A S Q W E,
 Start 1 / 2, Coin 5 / 6; F2 service switch, 9 / 0 service coins, P pause.
-<!-- The J1 line's button names in order, what Start/Coin/Pause/Service map to, and per-game
-     exceptions. Must agree with the .mra <buttons> positions. Light gun / trackball / mouse
-     options if any. -->
 
 ## Status
 
 Known issues:
-{{KNOWN_ISSUES}}
-<!-- Bulleted. Bold the ones a player would notice first. -->
+
+* **Nine sets still show generic button names** ("Button 1", "Button 2"): Candy Candy, Crazy War's
+  button 2, Fortress 2 Blue Arcade, Iron Fortress, Land Breaker, Linky Pipe, Penfan Girls, Puzzle King,
+  Steal See.
+* The video timing is inferred, not measured (Video timing).
+* The core's speed against the original boards has not been measured on hardware.
+* Sound has not been compared with MAME by ear on the board.
+* The M6295's output (KlonDike+) has not been compared with MAME; nor have Hidden Catch 3's pens, which
+  work on the board.
 
 `docs/MAME_KLUDGES.md` lists what is taken from MAME as behaviour and what is known not to be
 right. `docs/HACKS.md` lists this core's own approximations. `docs/ROADMAP.md` is the plan and its
@@ -121,68 +164,90 @@ progress; `docs/LESSONS_LEARNED.md` is what it cost.
 
 ### Features
 
-<!-- Keep every line; mark each done / not yet / n-a so the gaps are visible. -->
-
-* DIP switches from the `.mra` (`DIP;` in the OSD): {{DIPS_STATUS}}
-* Inputs: {{INPUTS_STATUS}}
-* CRT Adjust (H-Position, V-Shift, H-Size, V-Size): {{CRT_ADJUST_STATUS}}
-* HDMI scaling (integer scale, crop, crop offset): {{SCALING_STATUS}}
-* HDMI rotation (orientation): {{ROTATION_STATUS}}
-* Flip screen, HDMI and analog, from the OSD or the DIP (fake DIP where the game has none): {{FLIP_STATUS}}
-* HDMI-only options hidden under direct video: {{DIRECT_VIDEO_STATUS}}
-* Peripheral menus shown only for games that use them: {{PERIPHERAL_MENUS_STATUS}}
-* Rotary joysticks (Ikari Warriors controls, GRS keystroke mode), where used: {{ROTARY_STATUS}}
-* Light guns: mouse, analog stick and synthetic crosshair, where used: {{GUN_STATUS}}
-* Audio mix (Mono, None, 25%, 50%): {{AUDIO_MIX_STATUS}}
-* Hiscore saving (`hiscore.v`, with autosave): {{HISCORE_STATUS}}
-* NVRAM / EEPROM saved to the `.nvm` file: {{NVRAM_STATUS}}
-* Fast ROM loading via DDR: {{DDR_LOAD_STATUS}}
-* Pause (with CPU suspended): {{PAUSE_STATUS}}
-* Sound: {{SOUND_STATUS}}
-* Savestates (optional): {{SAVESTATE_STATUS}}
-* Cheats (optional): {{CHEATS_STATUS}}
+* DIP switches from the `.mra` (`DIP;` in the OSD): done
+* Inputs: done; MAME's default keyboard mapping
+* CRT Adjust (H-Position, V-Shift, H-Size, V-Size): not yet
+* HDMI scaling (integer scale, crop, crop offset): integer scale done; crop not yet
+* HDMI rotation (orientation): n/a, every set is horizontal
+* Flip screen, HDMI and analog, from the OSD or the DIP (fake DIP where the game has none): done, from
+  the OSD (no board here has a flip); checked in simulation on the three boards against MAME's frame
+  turned 180 degrees (the unflipped scan-out is pixel-identical to MAME's)
+* HDMI-only options hidden under direct video: not yet
+* Peripheral menus shown only for games that use them: n/a
+* Rotary joysticks (Ikari Warriors controls, GRS keystroke mode), where used: n/a
+* Light guns: mouse, analog stick and synthetic crosshair, where used: Hidden Catch 3's pens from the
+  analog sticks with a drawn cross; no mouse
+* Audio mix (Mono, None, 25%, 50%): done (None, 25%, 50%, 100%)
+* Hiscore saving (`hiscore.v`, with autosave): not yet
+* NVRAM / EEPROM saved to the `.nvm` file: done
+* Fast ROM loading via DDR: done
+* Pause (with CPU suspended): done
+* Sound: QS1000 (Vega, Gradation 2D) and M6295 (`eolith16`)
+* Savestates (optional): not yet
+* Cheats (optional): not yet
 
 ### Todo
 
-- [ ] {{TODO_ITEM}}
+- [ ] The game's own button names for the nine sets above
+- [ ] CRT Adjust, hiscore saving, HDMI-only options hidden under direct video
+- [ ] Sound judged against MAME on the board
+- [ ] Frame times on the board against MAME's (the `Eolith_stp` revision's probes)
+- [ ] The video timing from a board measurement
 
 ### Resource usage
 
-{{WHICH_BUILD}} on the DE10-nano's Cyclone V 5CSEBA6, speed grade 7, {{TIMING_ONE_LINE}}:
+The release revision (`Eolith`, commit `3f882db`, seed 2) on the DE10-nano's Cyclone V 5CSEBA6, speed
+grade 7, every clock meeting timing (clk_sys +0.867 ns, hdmi pll +0.328 ns; the lowest hold slack
++0.242 ns):
 
 | resource | used | available |
 | --- | --- | --- |
-| Logic (ALMs) | {{ALMS}} | 41,910 |
-| Block memory bits | {{BITS}} | 5,662,720 |
-| RAM blocks | {{M10K}} | 553 |
-| DSP blocks | {{DSP}} | 112 |
-| PLLs | {{PLLS}} | 6 |
+| Logic (ALMs) | 30,445 | 41,910 |
+| Block memory bits | 3,703,199 | 5,662,720 |
+| RAM blocks | 439 | 553 |
+| DSP blocks | 46 | 112 |
+| PLLs | 3 | 6 |
 
-<!-- Name the commit and the revision the numbers came from. One line on which resource is the
-     one to watch. -->
+RAM blocks (79%) are the resource to watch; the frame buffers take 240 of them.
 
 ## AI Attestation
 
-This core is being developed with heavy use of a frontier coding assistant. {{AUTHOR_FAMILIARITY}}
+This core is being developed with heavy use of a frontier coding assistant.
 
 ## Verification
 
-Not PCB-validated. MAME is the accuracy reference, with its own acknowledged uncertainties noted
-where they matter.
+Not PCB-validated. MAME's `vegaeo.cpp`, `eolith.cpp`, `eolith16.cpp`, `qs1000.cpp` and `e132xs` are the
+reference. Where the core follows MAME on something MAME marks as uncertain, it is listed in
+`docs/MAME_KLUDGES.md`; the core's own approximations are in `docs/HACKS.md`.
 
-* {{VERIFICATION_BULLET}}
-<!-- One bullet per thing that was diffed against MAME, with the count: CPU trace (N accesses),
-     video frames (N pixels of N), SDRAM image readback, .mra byte-for-byte against ROM_START,
-     sound against a transcription of MAME's mixer. Numbers, not adjectives. -->
+* CPU: `e1_pipe` agrees with MAME's interpreter after every instruction (PC, SR, all registers, every
+  bus access), at 0 and 3 bus wait states, on Crazy War's first 2,000,000 instructions, and on
+  Arcade-Vamphalf_MiSTer's random conformance suite (`scripts/e1_regress.py --replay --pipe`, 104 of
+  104 runs, 255 of 255 primary opcodes).
+* Whole board (`sim/sys_tb`, the SDRAM controller and a chip model) against MAME's trace from reset:
+  all 2,000,000 retired PCs on `crazywar` (178,383 of 178,383 data accesses); on `hidnctch` every data
+  access, and on `klondkp` 1,664,401 retired PCs, up to the first vblank poll, where the timing
+  differs.
+* Video: the scan-out is pixel-identical to MAME on 40 of 40 captured `crazywar` frames, 6 of 6
+  `hidnctch` and 6 of 6 `klondkp` frames (attract and play).
+* `.mra`: every set's image is identical to MAME's ROM_START image (`scripts/build_mra.py`); the
+  protection patches checked against MAME's CPU view (`hidctch2`, `landbrka`).
+* EEPROM: MAME's pin traffic for `hidnctch` over 1,200 frames, from blank: 12,112 of 12,112 data reads
+  agree (`sim/ee_tb`).
+* Gradation 2D sound (`sim/snd_tb`, `hidnctch`, 1,200 frames with a coin and a start): 4,711 of 4,711
+  QS1000 register writes and 1,805 of 1,805 sound CPU data reads as MAME's.
+* No interrupts: over 3,000 frames, no timer, INT1-4 or IO entries on any set of the three drivers in
+  MAME (`scripts/mame_irqcount.py`); the games poll vblank.
 
 ## Acknowledgements
 
 - **Sorgelig** and the **MiSTer-devel team** for the
-  [Template_MiSTer](https://github.com/MiSTer-devel/Template_MiSTer) framework{{SDRAM_CREDIT}}.
-- The **MAMEdev team** — {{DRIVER_AUTHORS}} — for `{{MAME_DRIVER}}` and the device emulations that
-  are this core's specification.
-{{VENDORED_MODULE_CREDITS}}
-<!-- One line per upstream in THIRD-PARTY.md: author, what was taken, link. -->
+  [Template_MiSTer](https://github.com/MiSTer-devel/Template_MiSTer) framework, and Sorgelig's
+  `sdram.v`, here by way of the Psikyo, Fuuki and KonamiGX cores.
+- The **MAMEdev team**: Tomasz Slanina and Pierpaolo Prazzoli (`eolith.cpp`), Pierpaolo Prazzoli
+  (`vegaeo.cpp`, `eolith16.cpp`, `e132xs`), Philip Bennett (`qs1000.cpp`), Mirko Buffoni and Aaron
+  Giles (`okim6295.cpp`), for the driver and device emulations that are this core's specification.
+- **Jose Tejada (jotego)** for JT8051 and JT6295 ([jtcores](https://github.com/jotego/jtcores)).
 
 ## Layout
 
@@ -201,8 +266,9 @@ Standard [Template_MiSTer](https://github.com/MiSTer-devel/Template_MiSTer) stru
 
 ## License
 
-{{LICENCE}} (see `LICENSE`). Imported components keep their own licences; `THIRD-PARTY.md` has the
-detail and every modified vendored file states the change in its header.
+GPL-3.0 (see `LICENSE`). Imported components keep their own licences; each vendored directory's
+`PROVENANCE.md` has the detail, `scripts/vendor.json` pins every vendored file, and every modified
+vendored file states the change in its header.
 
 Game ROMs contain copyrighted material and are not included. Obtaining them is your
 responsibility.

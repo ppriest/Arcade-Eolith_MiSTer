@@ -48,9 +48,9 @@ SRC = setting("MAME_SRC") or ""
 
 # --- core-specific: edit for this core -------------------------------------
 # The sets the core takes: --all, --selftest and the default game list.
-SETS = []
+SETS = ["hidnctch"]
 # The port that carries the DIP switches, checked by --selftest.
-DSW_PORT = "DSW"
+DSW_PORT = "DSW1"
 # The controlling switch's labels, shortened for a folded conditional DIP's
 # name tag (see _fold): {"Taito Corp. Japan": "JP", ...}
 FOLD_TAG = {}
@@ -159,6 +159,13 @@ def parse_ports(body, all_blocks, missing, depth=0):
     last = None
     modifying = False
 
+    def add(field):
+        # PORT_MODIFY: a field replaces the included fields its mask overlaps, as ioport's
+        # field_alloc does
+        if modifying:
+            ports[cur] = [f for f in ports[cur] if not (f[1] & field[1])]
+        ports[cur].append(field)
+
     for raw in body.split("\n"):
         line = raw.split("//")[0].strip()
         if not line:
@@ -190,11 +197,7 @@ def parse_ports(body, all_blocks, missing, depth=0):
             if "PORT_CONDITION" in line:
                 sys.exit(f"conditional PORT_DIPNAME is not handled: {line}")
             last = (_label(m.group(3), missing), _num(m.group(1)), _num(m.group(2)), {})
-            # PORT_MODIFY: a field replaces the included fields its mask
-            # overlaps, as ioport's field_alloc does
-            if modifying:
-                ports[cur] = [f for f in ports[cur] if not (f[1] & last[1])]
-            ports[cur].append(last)
+            add(last)
             continue
 
         # PORT_CONDITION("DSW",0x8000,EQUALS,0x8000) after a setting: the label
@@ -240,16 +243,18 @@ def parse_ports(body, all_blocks, missing, depth=0):
                 0 if d == "IP_ACTIVE_HIGH" else int(d, 0))
             off = defval & mask
             on = (~defval) & mask
-            ports[cur].append(("Service Mode", mask, off,
-                               {off: "Off", on: "On"}))
+            add(("Service Mode", mask, off, {off: "Off", on: "On"}))
             last = None
             continue
 
-        # Not emitted as a switch, but its default is part of the byte.
-        m = re.match(rf'PORT_DIPUNUSED(?:_DIPLOC)?\(\s*{_NUM}\s*,\s*{_NUM}',
-                     line)
+        # Not emitted as a switch, but its default is part of the byte. The default may be
+        # IP_ACTIVE_LOW (all ones) or IP_ACTIVE_HIGH (0), as the macro's second argument.
+        m = re.match(rf'PORT_DIPUNUSED(?:_DIPLOC)?\(\s*{_NUM}\s*,\s*'
+                     r'(IP_ACTIVE_LOW|IP_ACTIVE_HIGH|0x[0-9a-fA-F]+|\d+)', line)
         if m:
-            ports[cur].append(("(unused)", _num(m.group(1)), _num(m.group(2)), None))
+            mask, d = _num(m.group(1)), m.group(2)
+            dflt = mask if d == "IP_ACTIVE_LOW" else (0 if d == "IP_ACTIVE_HIGH" else _num(d) & mask)
+            add(("(unused)", mask, dflt, None))
             last = None
             continue
 
@@ -260,8 +265,7 @@ def parse_ports(body, all_blocks, missing, depth=0):
             # DEFAULT value is "off". Emitted as a real switch, because
             # reaching service mode without opening the cabinet is the whole
             # point of having it in the OSD.
-            ports[cur].append(("Service Mode", mask, dflt,
-                               {dflt: "Off", (~dflt) & mask: "On"}))
+            add(("Service Mode", mask, dflt, {dflt: "Off", (~dflt) & mask: "On"}))
             last = None
             continue
 

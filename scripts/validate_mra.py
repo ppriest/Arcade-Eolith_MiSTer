@@ -69,16 +69,17 @@ ROT_TAG = {"ROT0": "horizontal", "ROT90": "vertical (cw)", "ROT180": "horizontal
 # Elements whose text content is meaningful and must not be flagged.
 TEXT_OK = {'part', 'name', 'setname', 'year', 'manufacturer', 'category',
            'rbf', 'rotation', 'players', 'joystick', 'region', 'about',
-           'mratimestamp', 'catver', 'mameversion', 'status', 'nvram'}
+           'mratimestamp', 'catver', 'mameversion', 'status', 'nvram', 'patch'}
 
 
 def driver_rotations():
-    """setname -> rotation tag from the driver's GAME()/GAMEL() lines."""
+    """setname -> rotation tag from the GAME()/GAMEL() lines of every driver beside MAME_SRC (this core takes
+    sets from eolith.cpp, vegaeo.cpp and eolith16.cpp)."""
     src = setting("MAME_SRC")
     if not src or not Path(src).exists():
         return None
     out = {}
-    text = Path(src).read_text(encoding="utf8", errors="replace")
+    text = "\n".join(d.read_text(encoding="utf8", errors="replace") for d in sorted(Path(src).parent.glob("*.cpp")))
     for m in re.finditer(r'^GAMEL?\(\s*\d+,\s*(\w+),.*?,\s*(ROT\d+)\b', text, re.M):
         out[m.group(1)] = ROT_TAG.get(m.group(2))
     return out

@@ -1,0 +1,2285 @@
+// Hyperstone E1-16 / E1-32 CPU core, pipelined, written from MAME's interpreter
+// (src/devices/cpu/e132xs/e132xs.cpp, e132xsop.hxx, e1defs.h; BSD-3-Clause,
+// copyright-holders Pierpaolo Prazzoli and the MAME team).
+//
+// e1_cpu.sv's execute (X: ST_EXEC and the multi-clock states after it), with fetch and operand read as
+// stages that run ahead of it:
+//   F  assembles the next instruction, all its halfwords in one clock, into D, from two fetched 8-byte
+//      blocks (fc: the one holding fpc, pf: the one after) or from the instruction port in the clock its
+//      data arrives;
+//   R  reads D's operands in every clock: the register file (forwarding the write committed in that clock)
+//      and the globals (forwarding the queue head that commits at the end of it).
+// D goes into X ("go") when X is idle (ST_XW), or beside the clock in which X finishes an instruction of the
+// fast class (x_fast: one clock, no exception, at most one register written, PC, FP, the delay slot and SR's
+// H and T unchanged) or the last access of a load or store (x_mw_last: at most the load's two results written);
+// R takes those writes (fw_n, fwa_n) into the operands it reads beside it, so X reads only registers. F predicts BR taken and goes on from
+// its target; a BR that goes as predicted, or a DB not taken, lets D in beside it too. Otherwise X idles for a
+// clock, as e1_cpu's ST_RD does. A change of PC (redir) empties D and restarts F.
+// Register writes go through e1_cpu's queue. An instruction retires (the retire pulse, and the state the
+// benches compare) in order once its writes have committed, through a short FIFO.
+//
+// Behaviour follows the interpreter, including its quirks; each is marked "MAME:" where it is not what the
+// ISA manual says. The bus is always 32 bits wide and big-endian. An E1-16 board puts a width adapter
+// between this port and its 16-bit memory.
+//
+// Not implemented: power-down, floating point (the FP opcodes trap to their emulation
+// code as in MAME).
+
+module e1_pipe (
+	input             clk,
+	input             reset,
+	input             cen,
+
+	// bus: req held until ack. addr is the byte address; io=1 selects the I/O space,
+	// where the glue uses addr >> 13 as the port. be is the byte-lane mask; wdata is
+	// lane-positioned. rdata is the whole aligned dword.
+	output reg        bus_req,
+	output reg        bus_wr,
+	output reg        bus_io,
+	output reg [31:0] bus_addr,
+	output reg [3:0]  bus_be,
+	output reg [31:0] bus_wdata,
+	input             bus_ack,
+	input      [31:0] bus_rdata,
+
+	// instruction port: req held until ack, or until addr changes (the old request is then dropped);
+	// data is the aligned 8 bytes, the lowest-addressed halfword in [63:48]
+	output reg        if_req,
+	output reg [31:3] if_addr,
+	input             if_ack,
+	input      [63:0] if_data,
+
+	input      [6:0]  irq_in,      // ISR bits: INT1..INT4, IO1..IO3
+	output reg [6:0]  irq_ack,     // one-cycle pulse when the interrupt is taken
+	input             pause,
+	input             tick,        // one pulse per CPU clock (50 MHz): drives TR
+	input             tick2,       // a second CPU clock in the same clk (a CPU faster than clk: aoh's 80 MHz)
+
+	output reg        retire,      // one-cycle pulse after an instruction (or exception entry) completes
+	output reg [31:0] retire_pc,   // address of that instruction
+	output reg [31:0] retire_npc,  // architectural PC and SR after it (the next instruction may already
+	output reg [31:0] retire_sr,   // have been fetched and its PC set when the pulse comes)
+
+	// the load ST_EXEC is issuing in this clock: the address of its first access (combinational), for the
+	// memory to look up a clock before bus_req (vh_cpumem compares it with bus_addr)
+	output            la_req,
+	output     [31:0] la_addr,
+
+	output            dbg_rf_we,   // the local register file's write port, for probes
+	output     [5:0]  dbg_rf_wa,
+	output     [31:0] dbg_rf_wd
+);
+
+localparam [5:0] TRAP_RANGE = 6'd60;
+localparam [5:0] TRAP_RESET = 6'd62;
+
+// state numbers as e1_cpu's (the benches name them by number); its fetch and operand-read states are F and R
+localparam [4:0] ST_RESET  = 0,
+                 ST_XW     = 1,      // X idle, waiting for D
+                 ST_EXEC   = 4,
+                 ST_MEM    = 5,
+                 ST_MWAIT  = 6,
+                 ST_MPOST  = 7,
+                 ST_LOOP   = 8,
+                 ST_DIV    = 9,
+                 ST_DIVEND = 10,
+                 ST_FRM    = 11,
+                 ST_MUL    = 13,
+                 ST_MUL2   = 14;
+
+reg [4:0]  state;
+
+// architectural state
+reg [31:0] pc, sr, delay_pc;
+reg        delay_slot, delay_slot_taken;
+reg [31:0] G [0:31];
+// local registers live in e1_regram; a write lands one clock after commit_loc, and the read ports forward it.
+// _q: R's reads for D (X's operands in ST_EXEC), _t: this clock's reads before the forwarded write, _r: the names
+// e1_cpu's execute code uses
+reg [31:0] lS_q, lS1_q, lD_q, lD1_q, gS_q, gS1_q, gD_q, gD1_q, gM_q, gMD_q;
+reg [31:0] lS_t, lS1_t, lD_t, lD1_t, gS_t, gS1_t, gD_t, gD1_t, gM_t, gMD_t;
+reg [31:0] lS_r, lS1_r, lD_r, lD1_r, gS_r, gS1_r, gD_r, gD1_r, gM_r, gMD_r;
+reg        l_we_n, l_we_r;
+reg [5:0]  l_wa_n, l_wa_r;
+reg [31:0] l_wd_n, l_wd_r;
+
+// D: the next instruction
+reg        d_valid;
+reg [15:0] d_op, d_e1, d_e2;
+reg [1:0]  d_ilen;
+reg        d_pred;          // a BR that F predicted taken: fpc went on from its target
+reg [31:0] d_ipc, d_npc;      // its address, the address after it
+
+wire [5:0] w_didx  = {2'b0, d_op[7:4]} + sr[30:25];
+wire [5:0] w_didx1 = w_didx + 6'd1;
+wire [5:0] w_sidx  = {2'b0, d_op[3:0]} + sr[30:25];
+wire [5:0] w_sidx1 = w_sidx + 6'd1;
+wire [5:0] w_aidx;
+wire [31:0] rS_raw, rS1_raw, rD_raw, rD1_raw, rA_raw;
+e1_regram rf (.clk(clk), .we(l_we_r), .wa(l_wa_r), .wd(l_wd_r),
+	.ra0(w_sidx), .ra1(w_sidx1), .ra2(w_didx), .ra3(w_didx1), .ra4(w_aidx),
+	.rd0(rS_raw), .rd1(rS1_raw), .rd2(rD_raw), .rd3(rD1_raw), .rd4(rA_raw));
+wire [31:0] lS  = (l_we_r && l_wa_r == w_sidx)  ? l_wd_r : rS_raw;
+wire [31:0] lS1 = (l_we_r && l_wa_r == w_sidx1) ? l_wd_r : rS1_raw;
+wire [31:0] lD  = (l_we_r && l_wa_r == w_didx)  ? l_wd_r : rD_raw;
+wire [31:0] lD1 = (l_we_r && l_wa_r == w_didx1) ? l_wd_r : rD1_raw;
+wire [31:0] lA  = (l_we_r && l_wa_r == w_aidx)  ? l_wd_r : rA_raw;
+assign dbg_rf_we = l_we_r;
+assign dbg_rf_wa = l_wa_r;
+assign dbg_rf_wd = l_wd_r;
+// port 4: LDW.S's frame slot in ST_EXEC (from R's read: LDW.S never goes in beside a forwarded write), the
+// frame loops' slot in ST_LOOP
+assign w_aidx = (state == ST_LOOP) ? G[18][7:2] : (op[9] ? lD_q[7:2] : gD_q[7:2]);
+reg [31:0] trap_entry;
+reg [1:0]  intblock;
+reg        first_ins;
+reg        fin_req;         // the instruction completes at the end of this cycle
+reg [4:0]  nstate;
+reg        frm_req, frm_fin, ret_pend, frm_body;
+reg [1:0]  frm_kind;
+reg [5:0]  frm_tn;
+// Registers, never RAM: one clock can push several entries (five for the FP trap). A ring: X pushes and the
+// queue commits in the same clocks, so it need never be empty. [EO] Its positions are not reset to 0 when it
+// empties, so where X pushes does not depend on what commits in the same clock.
+(* ramstyle = "logic" *) reg        wq_g [0:7];
+(* ramstyle = "logic" *) reg        wq_raw [0:7];
+(* ramstyle = "logic" *) reg [5:0]  wq_i [0:7];
+(* ramstyle = "logic" *) reg [31:0] wq_v [0:7];
+reg [2:0]  wq_cnt, wq_rd;   // write and read positions
+reg [2:0]  t3;
+reg        wq_busy0, did_commit;
+// [EO] the queue head at the start of the clock: a local commits from it at the start of the clock (commit_loc),
+// a global at the end (commit_glob)
+reg        hd_valid, hd_raw;
+reg [5:0]  hd_i;
+reg [31:0] hd_v;
+reg        wq_pcw, pcw_new, gw_new;
+reg [2:0]  q_pend;          // entries waiting at the start of the clock
+reg        q_hg;            // the oldest of them is a global write
+reg [4:0]  q_hi;            // to this global
+// multiplier pipeline: operands registered in ST_EXEC, products registered in ST_MUL
+reg [1:0]  mk;
+reg        msg, m_dg;
+reg [5:0]  m_di, m_di1;
+reg [31:0] mA, mB;
+reg signed [65:0] mp;
+reg signed [31:0] p_ll, p_hh, p_lh, p_hl;
+reg [31:0] tr_val;
+reg [8:0]  tr_period, tr_cnt;
+reg        tpr_pending;
+reg [8:0]  tpr_next;
+reg        timer_pend;
+reg        timer_hit = 1'b0;
+
+// X: the instruction executing
+reg [15:0] op, e1, e2, op_x;
+reg [1:0]  ilen_x;
+reg [31:0] ipc, x_npc;      // its address, the address after it
+reg        x_fast;          // of the fast class
+reg        x_brk;           // a BR or DB, not in a delay slot
+reg        x_pred;          // a BR F predicted taken
+reg [3:0]  x_ext;           // its extend (0xce) sub-opcode, decoded at go (ext_code)
+reg        b_cond, b_ok;    // its condition; it goes as predicted (BR) or not taken (DB)
+reg        x_wloc, x_wglob; // it writes L[op[7:4] + FP] / G[op[7:4]]
+reg        x_srw;           // it has queued a write to SR: it retires with the PC and SR after that write
+reg        m_lS, m_lS1, m_lD, m_lD1, m_gS, m_gS1, m_gD, m_gD1, m_gM, m_gMD;   // D's operand is X's write
+reg [31:0] fw_n, fwa_n;     // the values X's instruction queued in this clock: the last, the one before
+reg [31:0] fl_v;            // [EO] a load's last access: the value read
+reg [31:0] x_seq;           // instructions gone into X, for the benches
+reg [5:0]  x_didx;
+reg        x_mw_last;       // X is in the last clock of a load or store that writes at most one register
+reg        w_l, w_g;        // X's instruction writes a local / a global in this clock (its last write)
+reg [5:0]  w_i;             // that register (a local's file index, a global's number)
+reg        wa_l, wa_g;      // and the write before it (LDD's first register)
+reg [5:0]  wa_i;
+reg        ma_lS, ma_lS1, ma_lD, ma_lD1, ma_gS, ma_gS1, ma_gD, ma_gD1, ma_gM, ma_gMD;
+reg        st_code;         // bus_addr's 8 bytes are a fetched block, D's, or the one being fetched
+reg        redir;           // X changed PC in this clock
+reg        st_hit;          // a store was acked in this clock
+reg        go, go_ovl, q_ok, d_fast, d_wr;
+reg        tt_fin;          // a trace trap's frame is built: the instruction before it retires
+
+// F
+reg [31:0] fpc;             // the halfword after D
+reg        fc_valid, pf_valid;
+reg [31:3] fc_addr, pf_addr;
+reg [63:0] fc_data, pf_data;
+reg        ackv, hA, hB, fh1, fh2, fn1, fn2, ftake, fcross;
+reg [31:3] b0, b1, nb, sb;
+reg [63:0] dA, dB;
+reg [2:0]  p0, p1, p2;
+reg [15:0] fw0, fw1, fw2;
+reg [1:0]  flen;
+reg        fbr;
+reg [31:0] fofs, ftgt;
+
+// retire FIFO: instructions that have finished, waiting for their queued writes to commit
+(* ramstyle = "logic" *) reg [31:0] rq_pc [0:3];
+(* ramstyle = "logic" *) reg [31:0] rq_npc [0:3];
+(* ramstyle = "logic" *) reg [31:0] rq_sr [0:3];
+(* ramstyle = "logic" *) reg [3:0]  rq_end [0:3];
+(* ramstyle = "logic" *) reg        rq_late [0:3];
+reg [1:0]  rq_rp, rq_wp;
+reg [2:0]  rq_n;
+reg [3:0]  push_seq, commit_seq;   // queue entries pushed and committed, mod 16
+reg        r_push, r_pop, r_new;
+
+// bus job engine
+reg        p_wr, p_io;
+reg [1:0]  p_n, p_k;
+reg [31:0] p_a0, p_a1, p_wd0, p_wd1;
+reg [2:0]  p_kind;         // 0 word, 1 byte u, 2 byte s, 3 half u, 4 half s
+reg [31:0] p_r0, p_r1;
+reg        p_w0_en, p_w0_g, p_w1_en, p_w1_g;
+reg [5:0]  p_w0_i, p_w1_i;
+reg        p_b_en, p_b_g;
+reg [5:0]  p_b_i;
+reg [31:0] p_b_v;
+reg        p_exc;
+reg [1:0]  p_loop;         // 0 none, 1 frame spill, 2 ret fill
+reg signed [7:0] lp_diff;
+reg        lp_flag;
+
+// divider
+reg [63:0] dv_n, dv_q;
+reg [32:0] dv_r;
+reg [31:0] dv_d;
+reg [6:0]  dv_cnt;
+reg        dv_signed, dv_dneg;
+reg        dv_dg;
+reg [5:0]  dv_di;
+
+integer    t_i;
+integer    t_k;
+
+//------------------------------------------------------------------
+// helpers
+//------------------------------------------------------------------
+// register read as an instruction sees it: PC is the delayed-branch target inside a delay slot
+function [31:0] rgv(input [4:0] i);
+	case (i)
+		5'd0: rgv = delay_slot ? delay_pc : pc;
+		5'd1: rgv = sr;
+		5'd25: rgv = {25'b0, irq_in};
+		default: rgv = G[i];
+	endcase
+endfunction
+
+function [31:0] rg(input [4:0] i);
+	case (i)
+		5'd0: rg = pc;
+		5'd1: rg = sr;
+		5'd25: rg = {25'b0, irq_in};
+		default: rg = G[i];
+	endcase
+endfunction
+
+function [5:0] fl_n(input [31:0] s);
+	fl_n = (s[24:21] == 4'd0) ? 6'd16 : {2'b0, s[24:21]};
+endfunction
+
+function [31:0] trap_addr(input [5:0] tn);
+	if (trap_entry == 32'hffffff00)
+		trap_addr = {24'hffffff, tn, 2'b00} & 32'hffffffff | trap_entry;
+	else
+		trap_addr = {24'h0, (6'd63 - tn), 2'b00} | trap_entry;
+endfunction
+
+function [31:0] nz32(input [31:0] v);
+	nz32 = {29'b0, v[31], (v == 32'd0), 1'b0};
+endfunction
+
+function [31:0] nz64(input [63:0] v);
+	nz64 = {29'b0, v[63], (v == 64'd0), 1'b0};
+endfunction
+
+task set_fp(input [6:0] v);  sr[31:25] = v; endtask
+task set_fl(input [3:0] v);  sr[24:21] = v; endtask
+
+// set_global_register
+task apply_global(input [4:0] i, input [31:0] v);
+	begin
+		case (i)
+			5'd1: begin
+				sr[15:0] = v[15:0];
+				sr[6] = 1'b0;
+			end
+			5'd18, 5'd19: G[i] = {v[31:2], 2'b00};
+			5'd21: begin
+				G[i] = v;
+				tpr_next = {1'b0, v[23:16]} + 9'd2;
+				if (v[31]) tpr_pending = 1'b1;
+				else begin tr_period = tpr_next; tr_cnt = 9'd0; tpr_pending = 1'b0; end
+			end
+			5'd22: begin
+				if (G[i] != v) begin G[i] = v; timer_eval; end
+			end
+			5'd23: begin G[i] = v; tr_val = v; timer_eval; end
+			5'd26: begin
+				G[i] = v;
+				timer_eval;
+			end
+			5'd25: ;
+			5'd27: begin
+				G[i] = v;
+				case (v[14:12])
+					3'd0: trap_entry = 32'h00000000;
+					3'd1: trap_entry = 32'h40000000;
+					3'd2: trap_entry = 32'h80000000;
+					3'd3: trap_entry = 32'hc0000000;
+					3'd7: trap_entry = 32'hffffff00;
+					default: ;
+				endcase
+			end
+			default: G[i] = v;
+		endcase
+	end
+endtask
+
+// MAME adjust_timer_interrupt: fire when TR has reached TCR and the interrupt is enabled
+task timer_eval;
+	begin
+		if (!G[26][23] && ((tr_val - G[22]) & 32'h80000000) == 32'd0) timer_pend = 1'b1;
+	end
+endtask
+
+// register writes are queued and drained one entry per clock (commit_loc, commit_glob).
+// Each entry is written under a constant index: the variable-index form (wq_v[wq_cnt] = v;
+// wq_cnt = wq_cnt + 1, twice in one clock) simulates correctly but on the board loses the first
+// push, e.g. a CALL's return address (docs/LESSONS_LEARNED.md).
+task wq_push(input wp_g, input wp_raw, input [5:0] wp_i, input [31:0] wp_v);
+	begin
+		if (wp_g && wp_i[4:0] == 5'd0) pcw_new = 1'b1;
+		if (wp_g) gw_new = 1'b1;
+		if (wp_g && !wp_raw && wp_i[4:0] == 5'd1) x_srw = 1'b1;
+		push_seq = push_seq + 4'd1;
+		case (wq_cnt)
+			3'd0: begin wq_g[0] = wp_g; wq_raw[0] = wp_raw; wq_i[0] = wp_i; wq_v[0] = wp_v; end
+			3'd1: begin wq_g[1] = wp_g; wq_raw[1] = wp_raw; wq_i[1] = wp_i; wq_v[1] = wp_v; end
+			3'd2: begin wq_g[2] = wp_g; wq_raw[2] = wp_raw; wq_i[2] = wp_i; wq_v[2] = wp_v; end
+			3'd3: begin wq_g[3] = wp_g; wq_raw[3] = wp_raw; wq_i[3] = wp_i; wq_v[3] = wp_v; end
+			3'd4: begin wq_g[4] = wp_g; wq_raw[4] = wp_raw; wq_i[4] = wp_i; wq_v[4] = wp_v; end
+			3'd5: begin wq_g[5] = wp_g; wq_raw[5] = wp_raw; wq_i[5] = wp_i; wq_v[5] = wp_v; end
+			3'd6: begin wq_g[6] = wp_g; wq_raw[6] = wp_raw; wq_i[6] = wp_i; wq_v[6] = wp_v; end
+			default: begin wq_g[7] = wp_g; wq_raw[7] = wp_raw; wq_i[7] = wp_i; wq_v[7] = wp_v; end
+		endcase
+`ifdef SIMULATION
+		if (wq_cnt - wq_rd == 3'd7) $display("WQ_OVERFLOW cnt=%0d rd=%0d op=%04x pc=%08x i=%0d g=%0d", wq_cnt, wq_rd, op, ipc, wp_i, wp_g);
+`endif
+		wq_cnt = wq_cnt + 3'd1;
+	end
+endtask
+
+// set_global_register semantics on a destination register
+task write_dst(input g, input [5:0] i, input [31:0] v);
+	begin
+		// a PC write takes effect in this cycle, not through the queue
+		if (g && i[4:0] == 5'd0) begin pc = {v[31:1], 1'b0}; redir = 1'b1; end
+		else begin
+			// MAME: a user-mode write that sets L is a privilege error (checked here, applied at commit)
+			if (g && i[4:0] == 5'd1 && !sr[18] && !sr[15] && v[15]) req_exc(TRAP_RANGE);
+			wq_push(g, 1'b0, i, v);
+		end
+	end
+endtask
+
+// raw write: no side effects (MAME writes global_regs[] directly in several places)
+task write_raw(input g, input [5:0] i, input [31:0] v);
+	begin
+		wq_push(g, 1'b1, i, v);
+	end
+endtask
+
+// [EO] the instruction's one write of res, as write_dst (raw 0) or write_raw (raw 1), made by w1_push
+task w_res(input g, input raw, input [5:0] i);
+	begin w1 = 1'b1; w1_g = g; w1_raw = raw; w1_i = i; end
+endtask
+
+// [EO] write_dst / write_raw of res, as wq_push but at the queue position of the start of the clock: no other
+// push comes before it in a clock w1 is set
+task w1_push;
+	begin
+		if (!w1_raw && w1_g && w1_i[4:0] == 5'd0) begin pc = {res[31:1], 1'b0}; redir = 1'b1; end
+		else begin
+			if (!w1_raw && w1_g && w1_i[4:0] == 5'd1 && !sr[18] && !sr[15] && res[15]) req_exc(TRAP_RANGE);
+			if (w1_g && !w1_raw && w1_i[4:0] == 5'd1) x_srw = 1'b1;
+			push_seq = push_seq + 4'd1;
+			case (wq_cnt0)
+				3'd0: begin wq_g[0] = w1_g; wq_raw[0] = w1_raw; wq_i[0] = w1_i; wq_v[0] = res; end
+				3'd1: begin wq_g[1] = w1_g; wq_raw[1] = w1_raw; wq_i[1] = w1_i; wq_v[1] = res; end
+				3'd2: begin wq_g[2] = w1_g; wq_raw[2] = w1_raw; wq_i[2] = w1_i; wq_v[2] = res; end
+				3'd3: begin wq_g[3] = w1_g; wq_raw[3] = w1_raw; wq_i[3] = w1_i; wq_v[3] = res; end
+				3'd4: begin wq_g[4] = w1_g; wq_raw[4] = w1_raw; wq_i[4] = w1_i; wq_v[4] = res; end
+				3'd5: begin wq_g[5] = w1_g; wq_raw[5] = w1_raw; wq_i[5] = w1_i; wq_v[5] = res; end
+				3'd6: begin wq_g[6] = w1_g; wq_raw[6] = w1_raw; wq_i[6] = w1_i; wq_v[6] = res; end
+				default: begin wq_g[7] = w1_g; wq_raw[7] = w1_raw; wq_i[7] = w1_i; wq_v[7] = res; end
+			endcase
+`ifdef SIMULATION
+			if (wq_cnt != wq_cnt0) $display("W1_ORDER cnt=%0d cnt0=%0d op=%04x pc=%08x", wq_cnt, wq_cnt0, op, ipc);
+			if (wq_cnt0 - wq_rd == 3'd7) $display("WQ_OVERFLOW cnt=%0d rd=%0d op=%04x pc=%08x i=%0d g=%0d", wq_cnt0, wq_rd, op, ipc, w1_i, w1_g);
+`endif
+			wq_cnt = wq_cnt0 + 3'd1;
+		end
+	end
+endtask
+
+// queue head, local register: written into the register file at the start of the cycle
+task commit_loc;
+	begin
+		if (wq_busy0 && !q_hg) begin   // [EO]
+			l_we_n = 1'b1; l_wa_n = hd_i; l_wd_n = hd_v;
+			wq_rd = wq_rd + 3'd1;
+			did_commit = 1'b1;
+			commit_seq = commit_seq + 4'd1;
+		end
+	end
+endtask
+
+// queue head, global register: applied at the end of the cycle, so the instruction logic
+// of that cycle never sees it and the SR, timer and trap-entry updates stay off its paths
+task commit_glob;
+	begin
+		if (hd_valid) begin   // [EO] never in a clock commit_loc commits
+			if (hd_raw) G[hd_i[4:0]] = hd_v;   // raw writes never target PC or SR
+			else apply_global(hd_i[4:0], hd_v);
+			wq_rd = wq_rd + 3'd1;
+			commit_seq = commit_seq + 4'd1;
+		end
+	end
+endtask
+
+// exception, trap and interrupt entry are requests, applied by ST_FRM
+task req_exc(input [5:0] tn);
+	begin frm_req = 1'b1; frm_body = 1'b1; frm_kind = 2'd0; frm_tn = tn; frm_fin = 1'b1; end
+endtask
+
+task req_trap(input [5:0] tn);
+	begin frm_req = 1'b1; frm_body = 1'b1; frm_kind = 2'd1; frm_tn = tn; frm_fin = 1'b1; end
+endtask
+
+task req_int(input [5:0] tn);
+	begin frm_req = 1'b1; frm_kind = 2'd2; frm_tn = tn; frm_fin = 1'b0; end
+endtask
+
+// end-of-instruction update from execute_run: ILC and P, then the trace trap
+task post_instr;
+	begin
+		if (((op & 16'hfef0) != 16'h0400) || ((op & 16'h010e) == 16'h0000)) begin
+			sr[20:19] = ilen_x;
+			sr[17] = 1'b1;
+		end
+		if (sr[16] && sr[17] && !delay_slot) begin
+			delay_slot_taken = 1'b0;
+			frm_req = 1'b1; frm_body = 1'b1; frm_kind = 2'd0; frm_tn = 6'd57; frm_fin = 1'b0;
+		end
+	end
+endtask
+
+// execute_exception / execute_trap / execute_int, one instance
+task apply_frame;
+	reg [7:0]  r;
+	reg [31:0] oldsr, addr;
+	reg [3:0]  nfl;
+	begin
+		addr = trap_addr(frm_tn);
+		r = {1'b0, sr[31:25]} + {2'b0, fl_n(sr)};
+		case (frm_kind)
+			2'd0: begin
+				if (!delay_slot_taken) sr[20:19] = ilen_x;
+				else pc = delay_pc - {30'b0, ilen_x};   // MAME: subtracts the halfword count, not bytes
+				// MAME: RET does not set P
+				if (((op_x & 16'hfef0) != 16'h0400) || ((op_x & 16'h010e) == 16'h0000)) sr[17] = 1'b1;
+				nfl = 4'd2;
+			end
+			2'd1: begin sr[20:19] = ilen_x; nfl = 4'd6; end
+			default: nfl = 4'd2;
+		endcase
+		oldsr = sr;
+		sr[24:21] = nfl;
+		sr[31:25] = r[6:0];
+`ifdef E1_DEBUG
+		$display("FRM kind=%0d r=%0d pc=%08x sr=%08x oldsr=%08x", frm_kind, r[5:0], pc, sr, oldsr);
+`endif
+		wq_push(1'b0, 1'b0, r[5:0], {pc[31:1], 1'b0} | {31'b0, sr[18]});
+		wq_push(1'b0, 1'b0, r[5:0] + 6'd1, oldsr);
+		sr[4] = 1'b0; sr[16] = 1'b0;
+		sr[15] = 1'b1; sr[18] = 1'b1;
+		if (frm_kind == 2'd2) sr[7] = 1'b1;
+		pc = addr;
+		redir = 1'b1;
+	end
+endtask
+
+// sized lane extraction for loads
+function [31:0] lane_ext(input [31:0] rd, input [31:0] a, input [2:0] kind);
+	reg [7:0]  b;
+	reg [15:0] h;
+	begin
+		b = rd >> (8 * (3 - a[1:0]));
+		h = a[1] ? rd[15:0] : rd[31:16];
+		case (kind)
+			3'd1: lane_ext = {24'b0, b};
+			3'd2: lane_ext = {{24{b[7]}}, b};
+			3'd3: lane_ext = {16'b0, h};
+			3'd4: lane_ext = {{16{h[15]}}, h};
+			default: lane_ext = rd;
+		endcase
+	end
+endfunction
+
+function [3:0] be_of(input [31:0] a, input [2:0] kind);
+	case (kind)
+		3'd1, 3'd2: be_of = 4'b1000 >> a[1:0];
+		3'd3, 3'd4: be_of = a[1] ? 4'b0011 : 4'b1100;
+		default:    be_of = 4'b1111;
+	endcase
+endfunction
+
+function [31:0] wd_of(input [31:0] a, input [2:0] kind, input [31:0] v);
+	case (kind)
+		3'd1, 3'd2: wd_of = {4{v[7:0]}};
+		3'd3, 3'd4: wd_of = {2{v[15:0]}};
+		default:    wd_of = v;
+	endcase
+endfunction
+
+// does the instruction have a first extension word?
+function need_e1(input [15:0] o);
+	reg [7:0] c;
+	begin
+		c = o[15:8];
+		if ((c >= 8'h10 && c <= 8'h1f) || (c >= 8'h90 && c <= 8'h9f) ||
+		    c == 8'hee || c == 8'hef || c == 8'hce)
+			need_e1 = 1'b1;
+		else if (c >= 8'h60 && c <= 8'h7f && c[0])
+			need_e1 = (o[3:0] == 4'd1 || o[3:0] == 4'd2 || o[3:0] == 4'd3);
+		else if (((c >= 8'he0 && c <= 8'hec) || (c >= 8'hf0 && c <= 8'hfc)) && o[7])
+			need_e1 = 1'b1;
+		else
+			need_e1 = 1'b0;
+	end
+endfunction
+
+// MAME: the interpreter sets ILC from this table once, before the first instruction after
+// reset (get_instruction_length); the long-branch and 0xb0-0xbc entries are what MAME does
+function [1:0] first_ilc(input [15:0] o, input [15:0] w1);
+	reg [7:0] c;
+	begin
+		c = o[15:8];
+		if ((c >= 8'h10 && c <= 8'h1f) || (c >= 8'h90 && c <= 8'h9f) || c == 8'hee || c == 8'hef)
+			first_ilc = w1[15] ? 2'd3 : 2'd2;
+		else if (c >= 8'h60 && c <= 8'h7f && c[0])
+			first_ilc = (o[3:0] == 4'd1) ? 2'd3 : ((o[3:0] == 4'd2 || o[3:0] == 4'd3) ? 2'd2 : 2'd1);
+		else if (c >= 8'hb0 && c <= 8'hbc)
+			first_ilc = o[7] ? 2'd2 : 2'd1;
+		else if (c == 8'hce)
+			first_ilc = 2'd2;
+		else
+			first_ilc = 2'd1;
+	end
+endfunction
+
+function need_e2(input [15:0] o, input [15:0] w1);
+	reg [7:0] c;
+	begin
+		c = o[15:8];
+		if ((c >= 8'h10 && c <= 8'h1f) || (c >= 8'h90 && c <= 8'h9f) || c == 8'hee || c == 8'hef)
+			need_e2 = w1[15];
+		else if (c >= 8'h60 && c <= 8'h7f && c[0])
+			need_e2 = (o[3:0] == 4'd1);
+		else
+			need_e2 = 1'b0;
+	end
+endfunction
+
+// arithmetic / logical right shifts as functions, so the signedness of the
+// expression cannot turn >>> into >> through a mixed-sign conditional
+function [63:0] shr64(input [63:0] v, input [4:0] n, input arith);
+	reg signed [63:0] sv;
+	begin
+		sv = v;
+		if (arith) begin sv = sv >>> n; shr64 = sv; end
+		else shr64 = v >> n;
+	end
+endfunction
+
+function [31:0] shr32(input [31:0] v, input [4:0] n, input arith);
+	reg signed [31:0] sv;
+	begin
+		sv = v;
+		if (arith) begin sv = sv >>> n; shr32 = sv; end
+		else shr32 = v >> n;
+	end
+endfunction
+
+function [31:0] clz32(input [31:0] v);
+	integer k;
+	reg done;
+	begin
+		clz32 = 32'd32; done = 1'b0;
+		for (k = 31; k >= 0; k = k - 1)
+			if (!done && v[k]) begin clz32 = 31 - k; done = 1'b1; end
+	end
+endfunction
+
+function [63:0] smul(input [31:0] a, input [31:0] b);
+	reg signed [31:0] sa, sb;
+	reg signed [63:0] p;
+	begin
+		sa = a; sb = b; p = sa * sb; smul = p;
+	end
+endfunction
+
+// RET: how many register-file lines to fill back from the stack
+task ret_loop_start;
+	reg signed [8:0] ds;
+	begin
+		ds = $signed({2'b0, sr[31:25]}) - $signed({2'b0, G[18][8:2]});
+		lp_diff = {ds[6], ds[6:0]};
+		if (lp_diff < 0) begin
+			p_loop <= 2'd2; nstate = ST_LOOP; fin_req = 1'b0;
+		end else begin
+			fin_req = 1'b1; nstate = ST_XW;
+		end
+	end
+endtask
+
+function [15:0] hw_of(input [63:0] d, input [1:0] i);
+	case (i)
+		2'd0: hw_of = d[63:48];
+		2'd1: hw_of = d[47:32];
+		2'd2: hw_of = d[31:16];
+		default: hw_of = d[15:0];
+	endcase
+endfunction
+
+//------------------------------------------------------------------
+// interrupts: returns 1 and takes the interrupt if one is pending (check_interrupts)
+//------------------------------------------------------------------
+task check_interrupts(output taken);
+	reg [31:0] fcr;
+	reg [1:0]  tp;
+	reg        tm;
+	begin
+		fcr = G[26];
+		taken = 1'b1;
+		tp = fcr[21:20];
+		tm = timer_pend && !fcr[23];
+		if (sr[15]) taken = 1'b0;
+		else if (irq_in[6] && (fcr & 32'h00000500) == 32'h00000400) begin irq_ack[6] <= 1'b1; req_int(6'd54); end
+		else if (tm && tp == 2'd3) begin timer_pend = 1'b0; req_int(6'd55); end
+		else if (irq_in[0] && !fcr[28]) begin irq_ack[0] <= 1'b1; req_int(6'd53); end
+		else if (tm && tp == 2'd2) begin timer_pend = 1'b0; req_int(6'd55); end
+		else if (irq_in[1] && !fcr[29]) begin irq_ack[1] <= 1'b1; req_int(6'd52); end
+		else if (tm && tp == 2'd1) begin timer_pend = 1'b0; req_int(6'd55); end
+		else if (irq_in[2] && !fcr[30]) begin irq_ack[2] <= 1'b1; req_int(6'd51); end
+		else if (tm && tp == 2'd0) begin timer_pend = 1'b0; req_int(6'd55); end
+		else if (irq_in[3] && !fcr[31]) begin irq_ack[3] <= 1'b1; req_int(6'd50); end
+		else if (irq_in[4] && (fcr & 32'h00000005) == 32'h00000004) begin irq_ack[4] <= 1'b1; req_int(6'd49); end
+		else if (irq_in[5] && (fcr & 32'h00000050) == 32'h00000040) begin irq_ack[5] <= 1'b1; req_int(6'd48); end
+		else taken = 1'b0;
+	end
+endtask
+
+//------------------------------------------------------------------
+// the load being issued (la_req, la_addr): exec_ldst's and exec_regind's first address, from the same
+// operands; I/O and the stack forms (e1 subtype 3, extra_s[1] set) are left out
+//------------------------------------------------------------------
+wire [31:0] la_lD = lD_q;
+wire [31:0] la_gD = gD_q;
+wire [31:0] la_xs = e1[15] ? {e1[14] ? 4'hf : 4'h0, e1[11:0], e2} : {e1[14] ? 20'hfffff : 20'h0, e1[11:0]};
+wire        la_rind = op[15:12] == 4'hd;
+wire [31:0] la_base = (la_rind || op[9]) ? la_lD : (!op[10] && op[7:4] == 4'd1) ? 32'd0 : la_gD;
+wire [31:0] la_off = (la_rind || op[10]) ? 32'd0 :
+                     (e1[13:12] == 2'd2 || (e1[13:12] == 2'd3 && la_xs[1:0] == 2'd1)) ? (la_xs & 32'hfffffffe) : la_xs;
+assign la_addr = la_base + la_off;
+assign la_req = state == ST_EXEC && !op[11] && (la_rind || (op[15:12] == 4'h9 && !(e1[13:12] == 2'd3 && la_xs[1])));
+
+//------------------------------------------------------------------
+// R
+//------------------------------------------------------------------
+// a global as D reads it: PC is the address after D (the delayed-branch target in a delay slot); a global the
+// queue head writes at the end of this clock comes from the head
+function [31:0] rgd(input [4:0] i);
+	case (i)
+		5'd0: rgd = delay_slot ? delay_pc : d_npc;
+		5'd1: rgd = sr;
+		5'd25: rgd = {25'b0, irq_in};
+		default: rgd = (hd_valid && hd_i[4:0] == i) ? hd_v : G[i];
+	endcase
+endfunction
+
+// the fast class: one clock in ST_EXEC, never an exception, at most one register written (the destination
+// field), PC, FP, the delay slot and SR's H and T unchanged. MOV and MOVI only with H clear (H makes their
+// global operands G16-G31); no destination PC or SR.
+function fast_f(input [15:0] o, input h);
+	reg [7:0] c;
+	reg       dok;
+	begin
+		c = o[15:8];
+		dok = o[9] || o[7:4] >= 4'd2;
+		casez (c)
+			8'b0010_00??, 8'b0011_00??, 8'b0110_00??, 8'b0111_00??: fast_f = 1'b1;      // cmp, cmpb, cmpi, cmpbi
+			8'b0010_01??, 8'b0110_01??: fast_f = dok && !h;                             // mov, movi
+			8'b0001_01??, 8'b0001_10??,                                                  // mask, sum
+			8'b0010_10??, 8'b0011_01??, 8'b0011_1???,                                    // add, andn, or, xor
+			8'b0100_0???, 8'b0100_10??, 8'b0101_0???, 8'b0101_10??,                      // subc, not, sub, addc, and, neg
+			8'b0110_10??, 8'b0111_01??, 8'b0111_1???,                                    // addi, andni, ori, xori
+			8'b1010_0???, 8'b1010_10??,                                                  // shri, sari, shli
+			8'b1011_10??: fast_f = dok;                                                  // set
+			8'h83, 8'h87, 8'h8b, 8'h8e, 8'h8f: fast_f = 1'b1;                            // shr, sar, shl, testlz, rol
+			default: fast_f = 1'b0;
+		endcase
+	end
+endfunction
+
+// a fast instruction writes its destination field (a local if o[9])
+function wr_f(input [15:0] o);
+	casez (o[15:8])
+		8'b0010_00??, 8'b0011_00??, 8'b0110_00??, 8'b0111_00??: wr_f = 1'b0;
+		8'b1011_10??: wr_f = o[8] ? (o[3:0] >= 4'd4 || o[3:0] == 4'd2) : (o[3:0] != 4'd1);
+		default: wr_f = 1'b1;
+	endcase
+endfunction
+
+// D may read SR through a global operand (R read it before X's instruction changed the flags)
+function rsr_f(input [15:0] o);
+	reg [7:0] c;
+	begin
+		c = o[15:8];
+		rsr_f = c < 8'he0 &&
+		        ((!o[8] && o[3:0] <= 4'd1 && !(c >= 8'h60 && c <= 8'h8f) && !(c >= 8'ha0 && c <= 8'hbb)) ||
+		         (!o[9] && o[7:4] <= 4'd1 && !(c >= 8'h80 && c <= 8'h8f) && c < 8'hd0));
+	end
+endfunction
+
+// D reads what the forwarding does not cover: LDW.S / STW.S (the frame slot through port 4; with them the
+// other e1 subtype-3 N forms), extend (G14, G15 in ST_EXEC); and MOV from TR (e1_tb loads TR with MAME's
+// value once the instruction before has retired)
+function noovl_f(input [15:0] o, input [15:0] x1, input h);
+	noovl_f = (o[15:12] == 4'h9 && o[10] && x1[13:12] == 2'd3) || o[15:8] == 8'hce ||
+	          (o[15:10] == 6'b001001 && !o[8] && h && o[3:0] == 4'd7);
+endfunction
+
+// the extend (0xce) sub-opcode in e1, as a code: execute and ST_MUL2 select on it rather than on e1
+function [3:0] ext_code(input [15:0] x1);
+	case (x1)
+		16'h0100: ext_code = 4'd0;
+		16'h0102: ext_code = 4'd1;
+		16'h0104: ext_code = 4'd2;
+		16'h0106: ext_code = 4'd3;
+		16'h010a: ext_code = 4'd4;
+		16'h010e: ext_code = 4'd5;
+		16'h011a: ext_code = 4'd6;
+		16'h011e: ext_code = 4'd7;
+		16'h002a: ext_code = 4'd8;
+		16'h002e: ext_code = 4'd9;
+		16'h0046: ext_code = 4'd10;
+		16'h004e: ext_code = 4'd11;
+		16'h0086: ext_code = 4'd12;
+		16'h0096: ext_code = 4'd13;
+		16'h0296: ext_code = 4'd14;
+		default:  ext_code = 4'd15;
+	endcase
+endfunction
+
+// check_interrupts would take an interrupt
+function int_any(input dummy);
+	reg [31:0] fcr;
+	begin
+		fcr = G[26];
+		int_any = !sr[15] &&
+		          ((irq_in[6] && (fcr & 32'h00000500) == 32'h00000400) || (timer_pend && !fcr[23]) ||
+		           (irq_in[0] && !fcr[28]) || (irq_in[1] && !fcr[29]) || (irq_in[2] && !fcr[30]) || (irq_in[3] && !fcr[31]) ||
+		           (irq_in[4] && (fcr & 32'h00000005) == 32'h00000004) || (irq_in[5] && (fcr & 32'h00000050) == 32'h00000040));
+	end
+endfunction
+
+//------------------------------------------------------------------
+// main FSM
+//------------------------------------------------------------------
+// temporaries for the execute cycle
+reg [7:0]  opc;
+reg [3:0]  dc, sc;
+reg        dl, sl;
+reg [6:0]  fp;
+reg [5:0]  didx, sidx, didx1, sidx1;
+reg [31:0] sreg, dreg, sregf, dregf, sregc;
+reg [31:0] imm, res, tmp32, tmp32b;
+reg [32:0] t33;
+reg [63:0] t64;
+reg [31:0] nsr_mask;
+reg        cond, took;
+reg [31:0] xs, extra_s, extra_u, ea;
+reg [1:0]  subt;
+reg        longf;
+reg [4:0]  n5;
+reg [5:0]  nimm;
+reg [31:0] ofs;
+reg [63:0] dw;
+reg [31:0] hi, lo, msk, tmpv;
+reg [7:0]  r8;
+reg signed [8:0] dsel;
+reg [7:0]  func_hi;
+reg        e_ok;
+reg        nodcp;
+// [EO] the one register write of an ALU, move or set instruction (w_res), pushed after the execute code as the
+// clock's last push (w1_push): its value, the latest to arrive, then passes one level of the queue's and the
+// forwarding's data selects instead of a select for every call site
+reg        w1, w1_g, w1_raw;
+reg [5:0]  w1_i;
+reg [2:0]  wq_cnt0;         // the queue's write position at the start of the clock
+
+wire [31:0] bus_rd_lane = bus_rdata;
+
+always @(posedge clk) begin
+	retire <= 1'b0;
+	irq_ack <= 7'd0;
+
+	if (reset) begin
+		state <= ST_RESET;
+		bus_req <= 1'b0;
+		if_req <= 1'b0;
+		fc_valid <= 1'b0; pf_valid <= 1'b0; d_valid <= 1'b0;
+		// emptied here too: the queue is read before ST_RESET's code runs, and an initial value is
+		// not a power-up value in Quartus (docs/LESSONS_LEARNED.md)
+		wq_cnt = 3'd0; wq_rd = 3'd0; ret_pend = 1'b0; push_seq = 4'd0; commit_seq = 4'd0; x_srw = 1'b0;
+		rq_n <= 3'd0; rq_rp <= 2'd0; rq_wp <= 2'd0;
+		x_fast <= 1'b0; x_brk <= 1'b0; x_pred <= 1'b0; x_wloc <= 1'b0; x_wglob <= 1'b0; x_seq <= 32'd0;
+		l_we_r <= 1'b0;
+	end else if (cen && !pause) begin
+		nstate = state;
+		fin_req = 1'b0;
+		frm_req = 1'b0;
+		frm_body = 1'b0;
+		pcw_new = 1'b0;
+		gw_new = 1'b0;
+		redir = 1'b0;
+		st_hit = 1'b0;
+		tt_fin = 1'b0;
+		w1 = 1'b0; wq_cnt0 = wq_cnt; res = 32'd0;   // [EO]
+		q_pend = wq_cnt - wq_rd;
+		q_hg = wq_g[wq_rd]; q_hi = wq_i[wq_rd][4:0];
+		wq_busy0 = (wq_cnt != wq_rd);
+		// [EO] entries pushed in this cycle are committed from the next one
+		hd_valid = wq_busy0 && q_hg;
+		hd_raw = wq_raw[wq_rd]; hd_i = wq_i[wq_rd]; hd_v = wq_v[wq_rd];
+		// [EO] a PC write waiting, from the start of the clock (a head commit_loc takes is a local, not one)
+		wq_pcw = 1'b0;
+		for (t_i = 0; t_i < 8; t_i = t_i + 1) begin
+			t3 = t_i[2:0] - wq_rd;
+			if (t3 < q_pend && wq_g[t_i] && wq_i[t_i][4:0] == 5'd0) wq_pcw = 1'b1;
+		end
+		l_we_n = 1'b0;
+		did_commit = 1'b0;
+		commit_loc;
+		// TR reaching TCR raises the timer interrupt from the next clock (timer_hit), which keeps the
+		// counter chain out of this clock's interrupt check
+		if (timer_hit) timer_pend = 1'b1;
+		timer_hit <= 1'b0;
+		for (t_k = 0; t_k < 2; t_k = t_k + 1)
+			if ((t_k == 0 ? tick : tick2) && state != ST_RESET) begin
+				if (tr_cnt + 9'd1 >= tr_period) begin
+					tr_cnt = 9'd0;
+					if (tpr_pending) begin tr_period = tpr_next; tpr_pending = 1'b0; end
+					tr_val = tr_val + 32'd1;
+					if (tr_val == G[22] && !G[26][23]) timer_hit <= 1'b1;
+				end else tr_cnt = tr_cnt + 9'd1;
+			end
+
+		//--------------------------------------------------------------
+		// R, before X's code changes SR and the delay slot in this clock: D's operands, in every clock (into _q at
+		// the end of the clock, with X's write of this clock if D goes in beside it)
+		lS_t  = (l_we_n && l_wa_n == w_sidx)  ? l_wd_n : lS;
+		lS1_t = (l_we_n && l_wa_n == w_sidx1) ? l_wd_n : lS1;
+		lD_t  = (l_we_n && l_wa_n == w_didx)  ? l_wd_n : lD;
+		lD1_t = (l_we_n && l_wa_n == w_didx1) ? l_wd_n : lD1;
+		gS_t  = rgd({1'b0, d_op[3:0]});
+		gS1_t = rgd({1'b0, d_op[3:0]} + 5'd1);
+		gD_t  = rgd({1'b0, d_op[7:4]});
+		gD1_t = rgd({1'b0, d_op[7:4]} + 5'd1);
+		gM_t  = rgd({1'b0, d_op[3:0]} + (sr[5] ? 5'd16 : 5'd0));
+		gMD_t = rgd({1'b0, d_op[7:4]} + (sr[5] ? 5'd16 : 5'd0));
+		// X in the last clock of a bus job: no exception, no frame loop, at most the load's results written (not to
+		// PC or SR), and not a store into code F holds
+		sb = bus_addr[31:3];
+		st_code = (fc_valid && sb == fc_addr) || (pf_valid && sb == pf_addr) || sb == fpc[31:3] || sb == fpc[31:3] + 29'd1 ||
+		          (d_valid && (sb == d_ipc[31:3] || sb == d_ipc[31:3] + 29'd1)) || (if_req && sb == if_addr);
+		x_mw_last = state == ST_MWAIT && bus_req && bus_ack && p_loop == 2'd0 && p_k + 2'd1 >= p_n && !p_exc &&
+		            (!p_w0_en || !p_w0_g || (p_w0_i[4:0] >= 5'd2 && p_w0_i[4:0] <= 5'd15)) &&
+		            (!p_w1_en || !p_w1_g || (p_w1_i[4:0] >= 5'd2 && p_w1_i[4:0] <= 5'd15)) && !(p_wr && !p_io && st_code);
+		// the register X's instruction writes in this clock, and which of D's operands it is (used if D goes in
+		// beside it)
+		wa_l = 1'b0; wa_g = 1'b0; wa_i = p_w0_i;
+		if (state == ST_MWAIT && p_w1_en) begin
+			wa_l = p_w0_en && !p_w0_g; wa_g = p_w0_en && p_w0_g;
+			w_l = !p_w1_g; w_g = p_w1_g; w_i = p_w1_i;
+		end else if (state == ST_MWAIT) begin
+			w_l = p_w0_en && !p_w0_g; w_g = p_w0_en && p_w0_g; w_i = p_w0_i;
+		end else begin
+			x_didx = {2'b0, op[7:4]} + sr[30:25];
+			w_l = x_wloc; w_g = x_wglob; w_i = x_wglob ? {2'b0, op[7:4]} : x_didx;
+		end
+		m_lS  = w_l && w_i == w_sidx;
+		m_lS1 = w_l && w_i == w_sidx1;
+		m_lD  = w_l && w_i == w_didx;
+		m_lD1 = w_l && w_i == w_didx1;
+		m_gS  = w_g && w_i == {2'b0, d_op[3:0]};
+		m_gS1 = w_g && w_i == {2'b0, d_op[3:0]} + 6'd1;
+		m_gD  = w_g && w_i == {2'b0, d_op[7:4]};
+		m_gD1 = w_g && w_i == {2'b0, d_op[7:4]} + 6'd1;
+		m_gM  = w_g && !sr[5] && w_i == {2'b0, d_op[3:0]};
+		m_gMD = w_g && !sr[5] && w_i == {2'b0, d_op[7:4]};
+		ma_lS  = wa_l && wa_i == w_sidx;
+		ma_lS1 = wa_l && wa_i == w_sidx1;
+		ma_lD  = wa_l && wa_i == w_didx;
+		ma_lD1 = wa_l && wa_i == w_didx1;
+		ma_gS  = wa_g && wa_i == {2'b0, d_op[3:0]};
+		ma_gS1 = wa_g && wa_i == {2'b0, d_op[3:0]} + 6'd1;
+		ma_gD  = wa_g && wa_i == {2'b0, d_op[7:4]};
+		ma_gD1 = wa_g && wa_i == {2'b0, d_op[7:4]} + 6'd1;
+		ma_gM  = wa_g && !sr[5] && wa_i == {2'b0, d_op[3:0]};
+		ma_gMD = wa_g && !sr[5] && wa_i == {2'b0, d_op[7:4]};
+		// D goes into X when the queue holds nothing R has not read (one local, committed in this clock, or one
+		// global G2-G15 from the head) and no PC write
+		q_ok = !wq_pcw && (q_pend == 3'd0 ||
+		       (q_pend == 3'd1 && (!q_hg || (q_hi >= 5'd2 && q_hi <= 5'd15 && d_op[15:8] != 8'hce))));
+		d_fast = fast_f(d_op, sr[5]) && !delay_slot && !sr[16];
+		d_wr = wr_f(d_op);
+		// X's BR or DB: its condition from SR as ST_EXEC sees it. A BR going as F predicted, or a DB not taken,
+		// changes nothing D depends on.
+		case (op[11:9])
+			3'd0: b_cond = sr[3];
+			3'd1: b_cond = sr[1];
+			3'd2: b_cond = sr[0];
+			3'd3: b_cond = sr[0] | sr[1];
+			3'd4: b_cond = sr[2];
+			default: b_cond = sr[2] | sr[1];
+		endcase
+		if (op[8]) b_cond = !b_cond;
+		if (op[11:8] == 4'hc) b_cond = 1'b1;
+		b_ok = x_brk && (op[12] ? b_cond == x_pred : !b_cond);
+		// beside a fast instruction's clock, such a branch's, or a bus job's last: only when no interrupt would be
+		// taken before D
+		go_ovl = d_valid && q_ok && ((state == ST_EXEC && (x_fast || b_ok)) || (x_mw_last && !sr[16])) &&
+		         intblock <= 2'd1 && !int_any(1'b0) && !rsr_f(d_op) && !noovl_f(d_op, d_e1, sr[5]);
+		go = go_ovl;
+		if (go_ovl) intblock = 2'd0;
+		if (d_valid && q_ok && state == ST_XW) begin
+			// the interrupt is sampled here, once, when the instruction goes on (e1_cpu's ST_RD)
+			if (intblock <= 2'd1) begin
+				intblock = 2'd0;
+				check_interrupts(took);
+			end else begin
+				intblock = intblock - 2'd1;
+			end
+			if (!frm_req) begin
+				go = 1'b1;
+				if (first_ins) begin sr[20:19] = first_ilc(d_op, d_e1); first_ins = 1'b0; end
+			end
+		end
+
+		case (state)
+		//----------------------------------------------------------
+		ST_RESET: begin
+			for (t_i = 0; t_i < 32; t_i = t_i + 1) G[t_i] = 32'd0;
+			wq_cnt = 3'd0; wq_rd = 3'd0; ret_pend = 1'b0; push_seq = 4'd0; commit_seq = 4'd0; x_srw = 1'b0;
+			trap_entry = 32'hffffff00;
+			G[20] = 32'hffffffff;      // BCR
+			G[27] = 32'hffffffff;      // MCR
+			G[26] = 32'hffffffff;      // FCR
+			G[21] = 32'h0c000000;      // TPR
+			tr_val = 32'd0; tr_period = 9'd2; tr_cnt = 9'd0; tpr_pending = 1'b0; timer_pend = 1'b0; timer_hit <= 1'b0;
+			sr = 32'd0;
+			pc = trap_addr(TRAP_RESET);
+			redir = 1'b1;
+			set_fp(7'd0); set_fl(4'd2);
+			sr[4] = 1'b0; sr[16] = 1'b0; sr[15] = 1'b1; sr[18] = 1'b1;
+			sr[20:19] = 2'd1;
+			wq_push(1'b0, 1'b0, 6'd0, {pc[31:1], 1'b0} | {31'b0, sr[18]});
+			wq_push(1'b0, 1'b0, 6'd1, sr);
+			delay_slot = 1'b0; delay_slot_taken = 1'b0; delay_pc = 32'd0;
+			intblock = 2'd0;
+			first_ins = 1'b1;
+			p_loop <= 2'd0;
+			nstate = ST_XW;
+		end
+
+		ST_XW: ;                   // R decides
+
+		ST_EXEC: begin
+			fin_req = 1'b1;
+			nstate = ST_XW;
+			pc = x_npc;
+			lS_r = lS_q; lS1_r = lS1_q; lD_r = lD_q; lD1_r = lD1_q;
+			gS_r = gS_q; gS1_r = gS1_q; gD_r = gD_q; gD1_r = gD1_q; gM_r = gM_q; gMD_r = gMD_q;
+			opc = op[15:8]; dc = op[7:4]; sc = op[3:0];
+			dl = opc[1]; sl = opc[0];
+			// check_delay_pc, for every instruction except the delayed branches and the
+			// reserved opcodes, which leave it alone
+			nodcp = (opc >= 8'he0 && opc <= 8'hec) || opc == 8'h8c || opc == 8'h8d ||
+			        (opc >= 8'hac && opc <= 8'haf) || opc == 8'hcf;
+			if (!nodcp) begin
+				if (!delay_slot) delay_slot_taken = 1'b0;
+				else begin
+					tmp32 = pc; pc = delay_pc; delay_pc = tmp32;
+					delay_slot = 1'b0; delay_slot_taken = 1'b1;
+					redir = 1'b1;
+				end
+			end
+			fp = sr[31:25];
+			didx = {2'b0, dc} + fp[5:0];  didx1 = didx + 6'd1;
+			sidx = {2'b0, sc} + fp[5:0];  sidx1 = sidx + 6'd1;
+			sreg = sl ? lS_r : gS_r;
+			dreg = dl ? lD_r : gD_r;
+			sregc = (!sl && sc == 4'd1) ? {31'b0, sr[0]} : sreg;
+			
+casez (opc)
+			//------------------------------------------------ chk
+			8'h00, 8'h01, 8'h02, 8'h03: begin
+				if (!sl && sc == 4'd1) begin
+					if (dreg == 32'd0) req_exc(TRAP_RANGE);
+				end else begin
+					cond = (!sl && sc == 4'd0) ? (dreg >= sreg) : (dreg > sreg);
+					if (cond) req_exc(TRAP_RANGE);
+				end
+			end
+			//------------------------------------------------ movd
+			8'h04, 8'h05, 8'h06, 8'h07: begin
+				sregf = sl ? lS1_r : gS1_r;
+				if (!dl && dc == 4'd0) begin
+					if (!sl && sc < 4'd2) begin
+						// MAME: RET with PC/SR source does nothing
+					end else begin
+						pc = {sreg[31:1], 1'b0};
+						redir = 1'b1;
+						tmpv = sr;
+						sr = (sregf & ~32'h001c0000) | {13'b0, sreg[0], 18'b0};
+						// privilege checks (old S/L from tmpv)
+						if ((!tmpv[18] && sr[18]) || (!sr[18] && !tmpv[15] && sr[15])) req_exc(TRAP_RANGE);
+						if (frm_req) begin
+							// MAME: the loop runs after the exception entry, with the new frame pointer
+							ret_pend = 1'b1; fin_req = 1'b0;
+						end else begin
+							ret_loop_start;
+						end
+					end
+				end else if (!sl && sc == 4'd1) begin
+					sr[1] = 1'b1; sr[2] = 1'b0;
+					write_dst(!dl, dl ? didx : {2'b0, dc}, 32'd0);
+					write_dst(!dl, dl ? didx1 : ({2'b0, dc} + 6'd1), 32'd0);
+				end else begin
+					sr[2:1] = 2'b00;
+					if (sreg == 32'd0 && sregf == 32'd0) sr[1] = 1'b1;
+					sr[2] = sreg[31];
+					write_dst(!dl, dl ? didx : {2'b0, dc}, sreg);
+					write_dst(!dl, dl ? didx1 : ({2'b0, dc} + 6'd1), sregf);
+				end
+			end
+			//------------------------------------------------ divu / divs
+			8'h08, 8'h09, 8'h0a, 8'h0b, 8'h0c, 8'h0d, 8'h0e, 8'h0f: begin
+				// MAME: same-register and PC/SR sources do nothing
+				if (((sl == dl) && ((sl ? sidx : {2'b0, sc}) == (dl ? didx : {2'b0, dc}) ||
+				                   (sl ? sidx : {2'b0, sc}) == (dl ? didx1 : ({2'b0, dc} + 6'd1)))) ||
+				    (!sl && sc < 4'd2)) begin
+				end else begin
+					dregf = dl ? lD1_r : gD1_r;
+					dw = {dreg, dregf};
+					dv_signed = opc[2];
+					if (sreg == 32'd0 || (opc[2] && dw[63])) begin
+						sr[3] = 1'b1;
+						req_exc(TRAP_RANGE);
+					end else begin
+						dv_n <= dw; dv_q <= 64'd0; dv_r <= 33'd0; dv_cnt <= 7'd0;
+						dv_dneg <= opc[2] && sreg[31];
+						dv_d <= (opc[2] && sreg[31]) ? (~sreg + 32'd1) : sreg;
+						dv_dg <= !dl; dv_di <= dl ? didx : {2'b0, dc};
+						nstate = ST_DIV;
+						fin_req = 1'b0;
+					end
+				end
+			end
+			//------------------------------------------------ xm
+			8'h10, 8'h11, 8'h12, 8'h13: begin
+				longf = e1[15];
+				extra_u = longf ? {4'b0, e1[11:0], e2} : {20'b0, e1[11:0]};
+				subt = e1[13:12];
+				if ((!sl && sc == 4'd1) || (!dl && dc < 4'd2)) begin
+				end else begin
+					res = sreg << e1[13:12]; w_res(!dl, 1'b1, dl ? didx : {2'b0, dc});
+					if (!e1[14]) begin
+						cond = (!sl && sc == 4'd0) ? (sreg >= extra_u) : (sreg > extra_u);
+						if (cond) req_exc(TRAP_RANGE);
+					end
+				end
+			end
+			//------------------------------------------------ mask
+			8'h14, 8'h15, 8'h16, 8'h17: begin
+				imm = e1[15] ? ({e1[13:0], e2} | (e1[14] ? 32'hc0000000 : 32'h0))
+				             : ({18'b0, e1[13:0]} | (e1[14] ? 32'hffffc000 : 32'h0));
+				res = sreg & imm;
+				sr[1] = (res == 32'd0);
+				w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+			end
+			//------------------------------------------------ sum
+			8'h18, 8'h19, 8'h1a, 8'h1b: begin
+				imm = e1[15] ? ({e1[13:0], e2} | (e1[14] ? 32'hc0000000 : 32'h0))
+				             : ({18'b0, e1[13:0]} | (e1[14] ? 32'hffffc000 : 32'h0));
+				t33 = {1'b0, sregc} + {1'b0, imm};
+				sr[3:0] = 4'b0000;
+				sr[0] = t33[32];
+				sr[3] = (sregc[31] ^ t33[31]) & (imm[31] ^ t33[31]);
+				res = t33[31:0];
+				sr[2:1] = {res[31], res == 32'd0};
+				w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+			end
+			//------------------------------------------------ sums
+			8'h1c, 8'h1d, 8'h1e, 8'h1f: begin
+				imm = e1[15] ? ({e1[13:0], e2} | (e1[14] ? 32'hc0000000 : 32'h0))
+				             : ({18'b0, e1[13:0]} | (e1[14] ? 32'hffffc000 : 32'h0));
+				t33 = {1'b0, sregc} + {1'b0, imm};
+				sr[3:1] = 3'b000;
+				sr[3] = (sregc[31] ^ t33[31]) & (imm[31] ^ t33[31]);
+				res = t33[31:0];
+				sr[2:1] = {res[31], res == 32'd0};
+				w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+				// MAME: tests src_code against SR even for a local source
+				if (sr[3] && (sl ? sidx : {2'b0, sc}) != 6'd1) req_exc(TRAP_RANGE);
+			end
+			//------------------------------------------------ cmp
+			8'h20, 8'h21, 8'h22, 8'h23: begin
+				t33 = {1'b0, dreg} - {1'b0, sregc};
+				sr[3:0] = 4'b0000;
+				sr[3] = (t33[31] ^ dreg[31]) & (dreg[31] ^ sregc[31]);
+				if (dreg < sregc) sr[0] = 1'b1;
+				else if (dreg == sregc) sr[1] = 1'b1;
+				if ($signed(dreg) < $signed(sregc)) sr[2] = 1'b1;
+			end
+			//------------------------------------------------ mov
+			8'h24, 8'h25, 8'h26, 8'h27: begin
+				tmpv = sr;
+				sr[5] = 1'b0;
+				if (!dl && tmpv[5] && !sr[18]) req_exc(TRAP_RANGE);
+				else begin
+					if (!sl) begin
+						// MAME: BCR, TPR, FCR and MCR read as zero
+						tmp32b = {1'b0, sc} + (tmpv[5] ? 5'd16 : 5'd0);
+						case (tmp32b[4:0])
+							5'd20, 5'd21, 5'd26, 5'd27: res = 32'd0;
+							5'd23: res = tr_val;
+							default: res = gM_r;
+						endcase
+					end else res = lS_r;
+					sr[2:1] = {res[31], res == 32'd0};
+					if (!dl) begin
+						tmp32b = {1'b0, dc} + (tmpv[5] ? 5'd16 : 5'd0);
+						w_res(1'b1, 1'b0, {1'b0, tmp32b[4:0]});
+						if (tmp32b[4:0] == 5'd0) sr[4] = 1'b0;
+					end else w_res(1'b0, 1'b0, didx);
+				end
+			end
+			//------------------------------------------------ add
+			8'h28, 8'h29, 8'h2a, 8'h2b: begin
+				t33 = {1'b0, sregc} + {1'b0, dreg};
+				sr[3:0] = 4'b0000;
+				sr[0] = t33[32];
+				sr[3] = (sregc[31] ^ t33[31]) & (dreg[31] ^ t33[31]);
+				res = t33[31:0];
+				sr[2:1] = {res[31], res == 32'd0};
+				w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+				if (!dl && dc == 4'd0) sr[4] = 1'b0;
+			end
+			//------------------------------------------------ adds
+			8'h2c, 8'h2d, 8'h2e, 8'h2f: begin
+				t33 = {1'b0, sregc} + {1'b0, dreg};
+				sr[3:1] = 3'b000;
+				sr[3] = (sregc[31] ^ t33[31]) & (dreg[31] ^ t33[31]);
+				res = t33[31:0];
+				sr[2:1] = {res[31], res == 32'd0};
+				w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+				if (sr[3]) req_exc(TRAP_RANGE);
+			end
+			//------------------------------------------------ cmpb
+			8'h30, 8'h31, 8'h32, 8'h33: begin
+				sr[1] = ((dreg & sreg) == 32'd0);
+			end
+			//------------------------------------------------ andn, or, xor, and
+			8'h34, 8'h35, 8'h36, 8'h37,
+			8'h38, 8'h39, 8'h3a, 8'h3b,
+			8'h3c, 8'h3d, 8'h3e, 8'h3f,
+			8'h54, 8'h55, 8'h56, 8'h57: begin
+				case (opc[7:2])
+					6'b001101: res = dreg & ~sreg;
+					6'b001110: res = dreg | sreg;
+					6'b001111: res = dreg ^ sreg;
+					default:   res = dreg & sreg;
+				endcase
+				sr[1] = (res == 32'd0);
+				w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+			end
+			//------------------------------------------------ subc
+			8'h40, 8'h41, 8'h42, 8'h43: begin
+				tmp32 = (!sl && sc == 4'd1) ? 32'd0 : sreg;
+				tmp32b = tmp32 + {31'b0, sr[0]};
+				t33 = {1'b0, dreg} - {1'b0, tmp32} - {32'b0, sr[0]};
+				tmpv = sr;
+				sr[3:0] = 4'b0000;
+				sr[3] = (t33[31] ^ dreg[31]) & (dreg[31] ^ tmp32b[31]);
+				sr[0] = t33[32];
+				res = dreg - tmp32b;
+				if (tmpv[1] && res == 32'd0) sr[1] = 1'b1;
+				sr[2] = res[31];
+				w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+			end
+			//------------------------------------------------ not
+			8'h44, 8'h45, 8'h46, 8'h47: begin
+				res = ~sreg;
+				sr[1] = (res == 32'd0);
+				w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+			end
+			//------------------------------------------------ sub
+			8'h48, 8'h49, 8'h4a, 8'h4b: begin
+				t33 = {1'b0, dreg} - {1'b0, sregc};
+				sr[3:0] = 4'b0000;
+				sr[0] = t33[32];
+				sr[3] = (t33[31] ^ dreg[31]) & (dreg[31] ^ sregc[31]);
+				res = t33[31:0];
+				sr[2:1] = {res[31], res == 32'd0};
+				w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+				if (!dl && dc == 4'd0) sr[4] = 1'b0;
+			end
+			//------------------------------------------------ subs
+			8'h4c, 8'h4d, 8'h4e, 8'h4f: begin
+				t33 = {1'b0, dreg} - {1'b0, sregc};
+				sr[3:1] = 3'b000;
+				sr[3] = (t33[31] ^ dreg[31]) & (dreg[31] ^ sregc[31]);
+				res = t33[31:0];
+				sr[2:1] = {res[31], res == 32'd0};
+				w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+				if (sr[3]) req_exc(TRAP_RANGE);
+			end
+			//------------------------------------------------ addc
+			8'h50, 8'h51, 8'h52, 8'h53: begin
+				tmpv = sr;
+				sr[3:0] = 4'b0000;
+				if (!sl && sc == 4'd1) begin
+					t33 = {1'b0, dreg} + {32'b0, tmpv[0]};
+					sr[3] = (dreg[31] ^ t33[31]) & t33[31];
+					res = t33[31:0];
+				end else begin
+					t33 = {1'b0, sreg} + {1'b0, dreg} + {32'b0, tmpv[0]};
+					sr[3] = (sreg[31] ^ t33[31]) & (dreg[31] ^ t33[31]) & t33[31];
+					res = sreg + dreg + {31'b0, tmpv[0]};
+				end
+				sr[0] = t33[32];
+				if (res == 32'd0 && tmpv[1]) sr[1] = 1'b1;
+				sr[2] = res[31];
+				w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+			end
+			//------------------------------------------------ neg
+			8'h58, 8'h59, 8'h5a, 8'h5b: begin
+				t64 = 64'd0 - {32'b0, sregc};
+				sr[3:0] = 4'b0000;
+				sr[0] = t64[32];
+				sr[3] = t64[31] & sregc[31];
+				res = 32'd0 - sregc;
+				sr[2:1] = {res[31], res == 32'd0};
+				w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+			end
+			//------------------------------------------------ negs
+			8'h5c, 8'h5d, 8'h5e, 8'h5f: begin
+				t64 = 64'd0 - {{32{sregc[31]}}, sregc};
+				sr[3:1] = 3'b000;
+				sr[3] = t64[31] & sregc[31];
+				res = 32'd0 - sregc;
+				sr[2:1] = {res[31], res == 32'd0};
+				w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+				if (sr[3]) req_exc(TRAP_RANGE);
+			end
+			//------------------------------------------------ immediate ALU group 0x60-0x7f
+			8'h6?, 8'h7?: begin
+				// odd opcodes: sc selects a constant or the extension words; even opcodes: sc itself
+				if (opc[0]) begin
+					case (sc)
+						4'd0: imm = 32'd16;
+						4'd1: imm = {e1, e2};
+						4'd2: imm = {16'b0, e1};
+						4'd3: imm = {16'hffff, e1};
+						4'd4: imm = 32'd32;
+						4'd5: imm = 32'd64;
+						4'd6: imm = 32'd128;
+						4'd7: imm = 32'h80000000;
+						4'd8: imm = 32'hfffffff8;
+						4'd9: imm = 32'hfffffff9;
+						4'd10: imm = 32'hfffffffa;
+						4'd11: imm = 32'hfffffffb;
+						4'd12: imm = 32'hfffffffc;
+						4'd13: imm = 32'hfffffffd;
+						4'd14: imm = 32'hfffffffe;
+						default: imm = 32'hffffffff;
+					endcase
+				end else imm = {28'b0, sc};
+				case (opc[3:2])
+				2'b00: begin // cmpi (0x60-63), cmpbi is 0x70-73 below
+					if (!opc[4]) begin
+						t33 = {1'b0, dreg} - {1'b0, imm};
+						sr[3:0] = 4'b0000;
+						sr[3] = (t33[31] ^ dreg[31]) & (dreg[31] ^ imm[31]);
+						if (dreg < imm) sr[0] = 1'b1;
+						else if (dreg == imm) sr[1] = 1'b1;
+						if ($signed(dreg) < $signed(imm)) sr[2] = 1'b1;
+					end else begin
+						// cmpbi
+						nimm = {opc[0], sc};
+						if (nimm != 6'd0) begin
+							if (nimm == 6'd31) imm = 32'h7fffffff;
+							sr[1] = ((dreg & imm) == 32'd0);
+						end else begin
+							sr[1] = (dreg[31:24] == 8'd0) || (dreg[23:16] == 8'd0) || (dreg[15:8] == 8'd0) || (dreg[7:0] == 8'd0);
+						end
+					end
+				end
+				2'b01: begin
+					if (!opc[4]) begin // movi
+						tmpv = sr;
+						sr[5] = 1'b0;
+						if (!dl && tmpv[5] && !sr[18]) req_exc(TRAP_RANGE);
+						else begin
+							sr[3:1] = 3'b000;
+							sr[1] = (imm == 32'd0); sr[2] = imm[31];
+							if (!dl) begin
+								tmp32b = {1'b0, dc} + (tmpv[5] ? 5'd16 : 5'd0);
+								res = imm; w_res(1'b1, 1'b0, {1'b0, tmp32b[4:0]});
+								if (tmp32b[4:0] == 5'd0) sr[4] = 1'b0;
+							end else begin res = imm; w_res(1'b0, 1'b0, didx); end
+						end
+					end else begin // andni
+						if (opc[0] && sc == 4'd15) imm = 32'h7fffffff;
+						res = dreg & ~imm;
+						sr[1] = (res == 32'd0);
+						w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+					end
+				end
+				2'b10: begin
+					if (!opc[4]) begin // addi
+						if (!opc[0] && sc == 4'd0) imm = {31'b0, sr[0] & (!sr[1] | dreg[0])};
+						t33 = {1'b0, imm} + {1'b0, dreg};
+						sr[3:0] = 4'b0000;
+						sr[0] = t33[32];
+						sr[3] = (imm[31] ^ t33[31]) & (dreg[31] ^ t33[31]);
+						res = t33[31:0];
+						sr[2:1] = {res[31], res == 32'd0};
+						w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+						if (!dl && dc == 4'd0) sr[4] = 1'b0;
+					end else begin // ori
+						res = dreg | imm;
+						sr[1] = (res == 32'd0);
+						w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+					end
+				end
+				default: begin // 2'b11
+					if (!opc[4]) begin // addsi
+						if (!opc[0] && sc == 4'd0) imm = {31'b0, sr[0] & (!sr[1] | dreg[0])};
+						t33 = {1'b0, imm} + {1'b0, dreg};
+						sr[3:1] = 3'b000;
+						sr[3] = (imm[31] ^ t33[31]) & (dreg[31] ^ t33[31]);
+						res = t33[31:0];
+						sr[2:1] = {res[31], res == 32'd0};
+						w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+						if (sr[3]) req_exc(TRAP_RANGE);
+					end else begin // xori
+						res = dreg ^ imm;
+						sr[1] = (res == 32'd0);
+						w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+					end
+				end
+				endcase
+			end
+			//------------------------------------------------ shifts and rotates, local operands
+			8'h80, 8'h81, 8'h84, 8'h85: begin // shrdi, sardi
+				n5 = opc[0] ? {1'b1, sc} : {1'b0, sc};
+				dw = {lD_r, lD1_r};
+				sr[2:0] = 3'b000;
+				if (opc[0] || sc != 4'd0) begin
+					sr[0] = dw[n5 - 5'd1];
+					dw = shr64(dw, n5, opc[2]);
+				end
+				sr[2:1] = {dw[63], dw == 64'd0};
+				wq_push(1'b0, 1'b0, didx, dw[63:32]); wq_push(1'b0, 1'b0, didx1, dw[31:0]);
+			end
+			8'h82, 8'h86: begin // shrd, sard
+				if (sidx == didx || sidx == didx1) begin
+				end else begin
+					n5 = lS_r[4:0];
+					dw = {lD_r, lD1_r};
+					sr[2:0] = 3'b000;
+					if (n5 != 5'd0) begin
+						sr[0] = dw[n5 - 5'd1];
+						dw = shr64(dw, n5, opc[2]);
+					end
+					sr[2:1] = {dw[63], dw == 64'd0};
+					wq_push(1'b0, 1'b0, didx, dw[63:32]); wq_push(1'b0, 1'b0, didx1, dw[31:0]);
+				end
+			end
+			8'h83, 8'h87: begin // shr, sar
+				n5 = lS_r[4:0];
+				res = lD_r;
+				sr[2:0] = 3'b000;
+				if (n5 != 5'd0) begin
+					sr[0] = res[n5 - 5'd1];
+					res = shr32(res, n5, opc[2]);
+				end
+				sr[2:1] = {res[31], res == 32'd0};
+				w_res(1'b0, 1'b0, didx);
+			end
+			8'h88, 8'h89, 8'h8a: begin // shldi, shld
+				if (opc == 8'h8a && (sidx == didx || sidx == didx1)) begin
+				end else begin
+					n5 = (opc == 8'h8a) ? lS_r[4:0] : (opc[0] ? {1'b1, sc} : {1'b0, sc});
+					hi = lD_r; lo = lD1_r;
+					dw = {hi, lo};
+					sr[3:0] = 4'b0000;
+					if (n5 != 5'd0) sr[0] = dw[6'd64 - {1'b0, n5}];
+					tmpv = hi << n5;
+					msk = n5 == 5'd0 ? 32'd0 : (32'hffffffff << (6'd32 - {1'b0, n5}));
+					if (((hi & msk) != 32'd0 && !tmpv[31]) || (((hi & msk) ^ msk) != 32'd0 && tmpv[31])) sr[3] = 1'b1;
+					dw = dw << n5;
+					sr[2:1] = {dw[63], dw == 64'd0};
+					wq_push(1'b0, 1'b0, didx, dw[63:32]); wq_push(1'b0, 1'b0, didx1, dw[31:0]);
+				end
+			end
+			8'h8b: begin // shl
+				n5 = lS_r[4:0];
+				hi = lD_r;
+				msk = n5 == 5'd0 ? 32'd0 : (32'hffffffff << (6'd32 - {1'b0, n5}));
+				sr[3:0] = 4'b0000;
+				if (n5 != 5'd0 && hi[6'd32 - {1'b0, n5}]) sr[0] = 1'b1;
+				res = hi << n5;
+				if (!res[31] ? ((hi & msk) != 32'd0) : (((hi & msk) ^ msk) != 32'd0)) sr[3] = 1'b1;
+				sr[2:1] = {res[31], res == 32'd0};
+				w_res(1'b0, 1'b0, didx);
+			end
+			8'h8e: begin // testlz
+				res = clz32(lS_r); w_res(1'b0, 1'b0, didx);
+			end
+			8'h8f: begin // rol
+				n5 = lS_r[4:0];
+				msk = n5 == 5'd0 ? 32'd0 : (32'hffffffff >> (6'd32 - {1'b0, n5}));
+				hi = lD_r;
+				res = (hi << n5) | (n5 == 5'd0 ? 32'd0 : (hi >> (6'd32 - {1'b0, n5})));
+				sr[3:0] = 4'b0000;
+				if (!res[31] ? ((res & msk) != 32'd0) : (((res & msk) ^ msk) != 32'd0)) sr[3] = 1'b1;
+				sr[1] = (res == 32'd0); sr[2] = res[31];
+				if (n5 != 5'd0 && res[0]) sr[0] = 1'b1;
+				w_res(1'b0, 1'b0, didx);
+			end
+			8'h8c, 8'h8d, 8'hac, 8'had, 8'hae, 8'haf: begin
+				// reserved: no effect
+			end
+			//------------------------------------------------ shri, sari, shli
+			8'ha0, 8'ha1, 8'ha2, 8'ha3, 8'ha4, 8'ha5, 8'ha6, 8'ha7, 8'ha8, 8'ha9, 8'haa, 8'hab: begin
+				n5 = opc[0] ? {1'b1, sc} : {1'b0, sc};
+				hi = dreg;
+				if (opc[3]) begin // shli
+					msk = n5 == 5'd0 ? 32'd0 : (32'hffffffff << (6'd32 - {1'b0, n5}));
+					sr[3:0] = 4'b0000;
+					if (n5 != 5'd0 && hi[6'd32 - {1'b0, n5}]) sr[0] = 1'b1;
+					res = hi << n5;
+					if (!res[31] ? ((hi & msk) != 32'd0) : (((hi & msk) ^ msk) != 32'd0)) sr[3] = 1'b1;
+				end else begin
+					sr[2:0] = 3'b000;
+					if (opc[0] || sc != 4'd0) sr[0] = hi[n5 - 5'd1];
+					res = shr32(hi, n5, opc[2]);
+				end
+				sr[2:1] = {res[31], res == 32'd0};
+				w_res(!dl, 1'b0, dl ? didx : {2'b0, dc});
+			end
+			//------------------------------------------------ loads and stores
+			8'h90, 8'h91, 8'h92, 8'h93, 8'h94, 8'h95, 8'h96, 8'h97,
+			8'h98, 8'h99, 8'h9a, 8'h9b, 8'h9c, 8'h9d, 8'h9e, 8'h9f: begin
+				extra_s = e1[15] ? ({e1[14] ? 4'hf : 4'h0, e1[11:0], e2})
+				                 : ({e1[14] ? 20'hfffff : 20'h0, e1[11:0]});
+				subt = e1[13:12];
+				p_w0_en <= 1'b0; p_w1_en <= 1'b0; p_b_en <= 1'b0; p_exc <= 1'b0;
+				p_n <= 2'd0; p_loop <= 2'd0;
+				exec_ldst();
+			end
+			//------------------------------------------------ mulsu
+			8'hb0, 8'hb1, 8'hb2, 8'hb3, 8'hb4, 8'hb5, 8'hb6, 8'hb7: begin
+				if ((!sl && sc < 4'd2) || (!dl && dc < 4'd2)) begin
+				end else begin
+					mk <= 2'd1; msg <= opc[2]; mA <= sreg; mB <= dreg;
+					m_dg <= !dl; m_di <= dl ? didx : {2'b0, dc}; m_di1 <= dl ? didx1 : ({2'b0, dc} + 6'd1);
+					nstate = ST_MUL; fin_req = 1'b0;
+				end
+			end
+			//------------------------------------------------ set
+			8'hb8, 8'hb9, 8'hba, 8'hbb: begin
+				if (!dl && dc < 4'd2) begin
+				end else begin
+					nsr_mask = 32'd0;
+					case (sc)
+						4'd4, 4'd5: nsr_mask = 32'h6;
+						4'd6, 4'd7: nsr_mask = 32'h4;
+						4'd8, 4'd9: nsr_mask = 32'h3;
+						4'd10, 4'd11: nsr_mask = 32'h1;
+						4'd12, 4'd13: nsr_mask = 32'h2;
+						4'd14, 4'd15: nsr_mask = 32'h8;
+						default: nsr_mask = 32'd0;
+					endcase
+					cond = (sr & nsr_mask) != 32'd0;
+					if (opc[0]) begin // HI
+						if (sc >= 4'd4 || sc == 4'd2) begin
+							if (sc[0]) res = cond ? 32'd0 : 32'hffffffff;
+							else if (sc == 4'd2) res = 32'hffffffff;
+							else res = cond ? 32'hffffffff : 32'd0;
+							w_res(!dl, 1'b1, dl ? didx : {2'b0, dc});
+						end
+					end else begin
+						if (sc == 4'd0) begin
+							// SETADR: the wrap carry goes into bit 9, as MAME's original comment says; MAME's
+							// code puts it in bit 0 (MAME_KLUDGES.md, CPU and I/O: mrkickera hangs with it)
+							res = ((G[18] & 32'hfffffe00) | {23'b0, fp, 2'b00}) +
+							      ((G[18][8] && !sr[31]) ? 32'h200 : 32'd0);
+							w_res(!dl, 1'b1, dl ? didx : {2'b0, dc});
+						end else if (sc >= 4'd2) begin
+							if (sc[0]) res = {31'b0, !cond};
+							else if (sc == 4'd2) res = 32'd1;
+							else res = {31'b0, cond};
+							if (sc == 4'd3) res = 32'd0;
+							w_res(!dl, 1'b1, dl ? didx : {2'b0, dc});
+						end
+					end
+				end
+			end
+			//------------------------------------------------ mul
+			8'hbc, 8'hbd, 8'hbe, 8'hbf: begin
+				if ((!sl && sc < 4'd2) || (!dl && dc < 4'd2)) begin
+				end else begin
+					mk <= 2'd0; msg <= 1'b1; mA <= sreg; mB <= dreg;
+					m_dg <= !dl; m_di <= dl ? didx : {2'b0, dc};
+					nstate = ST_MUL; fin_req = 1'b0;
+				end
+			end
+			//------------------------------------------------ floating point: software emulation trap
+			8'hc0, 8'hc1, 8'hc2, 8'hc3, 8'hc4, 8'hc5, 8'hc6, 8'hc7, 8'hc8, 8'hc9, 8'hca, 8'hcb, 8'hcc, 8'hcd: begin
+				sreg = lS_r; sregf = lS1_r;
+				sr[20:19] = 2'd1;
+				if (trap_entry == 32'hffffff00) ea = 32'hfffffe00 | {24'b0, opc[3:0], 4'b0};
+				else ea = trap_entry | (32'h10c | ({24'b0, (8'hcf - opc)} << 4));
+				r8 = {1'b0, fp} + {2'b0, fl_n(sr)};
+				wq_push(1'b0, 1'b0, r8[5:0], (G[18] & 32'hffffff00) + 32'h100 + ({26'b0, didx} << 2));
+				wq_push(1'b0, 1'b0, r8[5:0] + 6'd1, sreg);
+				wq_push(1'b0, 1'b0, r8[5:0] + 6'd2, sregf);
+				wq_push(1'b0, 1'b0, r8[5:0] + 6'd3, {pc[31:1], 1'b0} | {31'b0, sr[18]});
+				wq_push(1'b0, 1'b0, r8[5:0] + 6'd4, sr);
+				sr[24:21] = 4'd6;
+				sr[31:25] = r8[6:0];
+				sr[4] = 1'b0; sr[16] = 1'b0;
+				sr[15] = 1'b1;
+				pc = ea;
+				redir = 1'b1;
+			end
+			//------------------------------------------------ extend
+			8'hce: begin
+				sreg = lS_r; dreg = lD_r;
+				case (x_ext)
+					4'd0, 4'd1, 4'd2, 4'd3, 4'd4, 4'd5, 4'd6, 4'd7, 4'd8, 4'd9, 4'd10, 4'd11: begin
+						// multiplies take two more states (ST_MUL, ST_MUL2)
+						mk <= 2'd2; msg <= (x_ext != 4'd2); mA <= sreg; mB <= dreg;
+						nstate = ST_MUL; fin_req = 1'b0;
+					end
+					4'd12: begin     // 0x0086
+						tmpv = G[14]; msk = G[15];
+						wq_push(1'b1, 1'b1, 6'd14, {sreg[31:16] + tmpv[15:0], sreg[15:0] + msk[15:0]});
+						wq_push(1'b1, 1'b1, 6'd15, {sreg[31:16] - tmpv[15:0], sreg[15:0] - msk[15:0]});
+					end
+					4'd13: begin     // 0x0096
+						tmpv = G[14]; msk = G[15];
+						wq_push(1'b1, 1'b1, 6'd14, {sreg[31:16] + tmpv[30:15], sreg[15:0] + msk[30:15]});
+						wq_push(1'b1, 1'b1, 6'd15, {sreg[31:16] - tmpv[30:15], sreg[15:0] - msk[30:15]});
+					end
+					4'd14: begin     // 0x0296
+						tmpv = G[14]; msk = G[15];
+						hi = {16'b0, sreg[31:16]} + {15'b0, tmpv[31:15]};
+						lo = {16'b0, sreg[15:0]} + {15'b0, msk[31:15]};
+						wq_push(1'b1, 1'b1, 6'd14, {hi[16:1], lo[16:1]});
+						hi = {16'b0, sreg[31:16]} - {15'b0, tmpv[31:15]};
+						lo = {16'b0, sreg[15:0]} - {15'b0, msk[31:15]};
+						wq_push(1'b1, 1'b1, 6'd15, {hi[16:1], lo[16:1]});
+					end
+					default: ;
+				endcase
+			end
+			//------------------------------------------------ register-indirect loads and stores
+			8'hd0, 8'hd1, 8'hd2, 8'hd3, 8'hd4, 8'hd5, 8'hd6, 8'hd7,
+			8'hd8, 8'hd9, 8'hda, 8'hdb, 8'hdc, 8'hdd, 8'hde, 8'hdf: begin
+				p_w0_en <= 1'b0; p_w1_en <= 1'b0; p_b_en <= 1'b0; p_exc <= 1'b0;
+				p_n <= 2'd0; p_loop <= 2'd0;
+				exec_regind();
+			end
+			//------------------------------------------------ db / dbr
+			8'he0, 8'he1, 8'he2, 8'he3, 8'he4, 8'he5, 8'he6, 8'he7, 8'he8, 8'he9, 8'hea, 8'heb, 8'hec: begin
+				case (opc[3:1])
+					3'd0: cond = sr[3];
+					3'd1: cond = sr[1];
+					3'd2: cond = sr[0];
+					3'd3: cond = sr[0] | sr[1];
+					3'd4: cond = sr[2];
+					default: cond = sr[2] | sr[1];
+				endcase
+				if (opc[0]) cond = !cond;
+				if (opc == 8'hec) cond = 1'b1;
+				if (op[7]) ofs = {(e1[0] ? 9'h1ff : 9'h000), op[6:0], e1[15:1], 1'b0};
+				else ofs = {(op[0] ? 25'h1ffffff : 25'h0), op[6:1], 1'b0};
+				if (!delay_slot) begin
+					delay_slot_taken = 1'b0;
+					if (cond) begin
+						delay_slot = 1'b1;
+						delay_pc = pc + ofs;
+						intblock = 2'd2;
+					end
+				end else begin
+					delay_slot = 1'b0;
+					delay_slot_taken = 1'b1;
+					redir = 1'b1;
+					if (cond) begin
+						pc = delay_pc + ofs;
+						sr[4] = 1'b0;
+					end else pc = delay_pc;
+				end
+			end
+			//------------------------------------------------ frame
+			8'hed: begin
+				r8 = {1'b0, fp} - {4'b0, sc};
+				set_fp(r8[6:0]);
+				set_fl(dc);
+				sr[4] = 1'b0;
+				dsel = $signed({2'b0, G[18][8:2]}) + 9'sd54 - $signed({1'b0, r8}) - $signed({5'b0, fl_n(sr)});
+				lp_diff = {dsel[6], dsel[6:0]};
+				if (lp_diff < 0) begin
+					lp_flag <= (G[18] >= G[19]);
+					p_loop <= 2'd1;
+					nstate = ST_LOOP;
+					fin_req = 1'b0;
+				end
+			end
+			//------------------------------------------------ call
+			8'hee, 8'hef: begin
+				if (e1[15]) begin
+					extra_s = {e1[13:0], e2} | (e1[14] ? 32'hc0000000 : 32'h0);
+					sr[20:19] = 2'd3;
+				end else begin
+					extra_s = {18'b0, e1[13:0]} | (e1[14] ? 32'hffffc000 : 32'h0);
+					sr[20:19] = 2'd2;
+				end
+				tmp32 = (!sl && sc == 4'd1) ? 32'd0 : sreg;
+				r8 = {1'b0, fp} + (dc == 4'd0 ? 8'd16 : {4'b0, dc});
+				wq_push(1'b0, 1'b0, r8[5:0], {pc[31:1], 1'b0} | {31'b0, sr[18]});
+				wq_push(1'b0, 1'b0, r8[5:0] + 6'd1, sr);
+				set_fp(r8[6:0]);
+				set_fl(4'd6);
+				sr[4] = 1'b0;
+				pc = {extra_s[31:1], 1'b0} + tmp32;
+				redir = 1'b1;
+				intblock = 2'd2;
+			end
+			//------------------------------------------------ branches
+			8'hf0, 8'hf1, 8'hf2, 8'hf3, 8'hf4, 8'hf5, 8'hf6, 8'hf7, 8'hf8, 8'hf9, 8'hfa, 8'hfb, 8'hfc: begin
+				case (opc[3:1])
+					3'd0: cond = sr[3];
+					3'd1: cond = sr[1];
+					3'd2: cond = sr[0];
+					3'd3: cond = sr[0] | sr[1];
+					3'd4: cond = sr[2];
+					default: cond = sr[2] | sr[1];
+				endcase
+				if (opc[0]) cond = !cond;
+				if (opc == 8'hfc) cond = 1'b1;
+				if (op[7]) ofs = {(e1[0] ? 9'h1ff : 9'h000), op[6:0], e1[15:1], 1'b0};
+				else ofs = {(op[0] ? 25'h1ffffff : 25'h0), op[6:1], 1'b0};
+				if (cond) begin
+					pc = pc + ofs;
+					sr[4] = 1'b0;
+					if (!x_pred) redir = 1'b1;
+				end else if (x_pred) redir = 1'b1;   // F went on from the target
+			end
+			//------------------------------------------------ trap
+			8'hfd, 8'hfe, 8'hff: begin
+				res = {26'b0, op[7:2]};
+				tmpv = {28'b0, op[9:8], op[1:0]};
+				case (tmpv[3:0])
+					4'd4, 4'd5: nsr_mask = 32'h6;
+					4'd6, 4'd7: nsr_mask = 32'h4;
+					4'd8, 4'd9: nsr_mask = 32'h3;
+					4'd10, 4'd11: nsr_mask = 32'h1;
+					4'd12, 4'd13: nsr_mask = 32'h2;
+					4'd14: nsr_mask = 32'h8;
+					default: nsr_mask = 32'd0;
+				endcase
+				if (tmpv[3:0] >= 4'd4 && tmpv[3:0] <= 4'd14 && !tmpv[0]) cond = (sr & nsr_mask) != 32'd0;
+				else cond = (sr & nsr_mask) == 32'd0;
+				if (cond) req_trap(res[5:0]);
+			end
+			default: ; // 0xcf and anything unlisted
+			endcase
+		end
+
+		//----------------------------------------------------------
+		ST_MEM: begin
+			// issue bus job p_k
+			bus_req <= 1'b1;
+			bus_wr <= p_wr;
+			bus_io <= p_io;
+			bus_addr <= (p_k == 2'd0) ? p_a0 : p_a1;
+			bus_be <= p_io ? 4'b1111 : be_of((p_k == 2'd0) ? p_a0 : p_a1, p_kind);
+			bus_wdata <= wd_of((p_k == 2'd0) ? p_a0 : p_a1, p_kind, (p_k == 2'd0) ? p_wd0 : p_wd1);
+			nstate = ST_MWAIT;
+		end
+
+		ST_MWAIT: begin
+			if (bus_req && bus_ack) begin
+				bus_req <= 1'b0;
+				// a store: F fetches again what it hit (the memory has the new data from this clock)
+				if (p_wr && !p_io) st_hit = 1'b1;
+				if (!p_wr) begin
+					if (p_k == 2'd0) p_r0 <= p_io ? bus_rdata : lane_ext(bus_rdata, bus_addr, p_kind);
+					else p_r1 <= p_io ? bus_rdata : lane_ext(bus_rdata, bus_addr, p_kind);
+				end
+				if (p_loop != 2'd0) begin
+					if (p_loop == 2'd1) begin
+write_raw(1'b1, 6'd18, G[18] + 32'd4);
+lp_diff = lp_diff + 8'sd1;
+end else begin
+write_dst(1'b0, {G[18][7:2]}, bus_rdata);
+lp_diff = lp_diff + 8'sd1;
+end
+					nstate = ST_LOOP;
+				end else if (p_k + 2'd1 < p_n) begin
+					p_k <= p_k + 2'd1;
+					if (p_wr && !p_io && (bus_addr[31:22] == 10'd0 || (bus_addr[31:18] == 14'h1000 && bus_addr[17:16] != 2'd0))) begin
+						nstate = ST_MEM;     // a cached store: vh_cpumem's S_WLOOK reads bus_* in the next clock
+					end else begin
+						// the second access goes out in this clock, as ST_MEM would issue it
+						bus_req <= 1'b1;
+						bus_addr <= p_a1;
+						bus_be <= p_io ? 4'b1111 : be_of(p_a1, p_kind);
+						bus_wdata <= wd_of(p_a1, p_kind, p_wd1);
+						nstate = ST_MWAIT;
+					end
+				end else begin
+					// last access: write the results back in this cycle
+					tmpv = p_io ? bus_rdata : lane_ext(bus_rdata, bus_addr, p_kind);
+					if (p_w0_en) write_dst(p_w0_g, p_w0_i, (p_n == 2'd2) ? p_r0 : tmpv);
+					if (p_w1_en) write_dst(p_w1_g, p_w1_i, tmpv);
+					if (p_b_en) write_raw(p_b_g, p_b_i, p_b_v);
+					if (p_exc) req_exc(TRAP_RANGE);
+					fin_req = 1'b1;
+					nstate = ST_XW;
+				end
+			end
+		end
+
+		ST_LOOP: if (wq_busy0) begin
+			// the stack pointer update from the previous word has to reach G before it is used
+			nstate = ST_LOOP;
+		end else begin
+			if (lp_diff < 0) begin
+				if (p_loop == 2'd1) begin
+p_wr <= 1'b1; p_io <= 1'b0; p_kind <= 3'd0; p_k <= 2'd0;
+p_a0 <= G[18]; p_wd0 <= lA;
+end else begin
+write_raw(1'b1, 6'd18, G[18] - 32'd4);
+p_wr <= 1'b0; p_io <= 1'b0; p_kind <= 3'd0; p_k <= 2'd0;
+p_a0 <= G[18] - 32'd4;
+end
+				p_n <= 2'd1;
+				nstate = ST_MEM;
+			end else begin
+				if (p_loop == 2'd1 && lp_flag) req_exc(TRAP_RANGE);
+p_loop <= 2'd0;
+fin_req = 1'b1;
+nstate = ST_XW;
+			end
+		end
+
+		ST_MPOST: begin
+			if (p_w0_en) write_dst(p_w0_g, p_w0_i, p_r0);
+if (p_w1_en) write_dst(p_w1_g, p_w1_i, p_r1);
+if (p_b_en) write_raw(p_b_g, p_b_i, p_b_v);
+if (p_exc) req_exc(TRAP_RANGE);
+fin_req = 1'b1;
+nstate = ST_XW;
+		end
+
+		//----------------------------------------------------------
+		ST_DIV: begin
+			// restoring division, one dividend bit per clock
+			tmp32 = 32'd0;
+			dv_r <= dv_r;
+			begin : divstep
+				reg [32:0] r2;
+				r2 = {dv_r[31:0], dv_n[63]};
+				dv_n <= {dv_n[62:0], 1'b0};
+				if (r2 >= {1'b0, dv_d}) begin
+					dv_r <= r2 - {1'b0, dv_d};
+					dv_q <= {dv_q[62:0], 1'b1};
+				end else begin
+					dv_r <= r2;
+					dv_q <= {dv_q[62:0], 1'b0};
+				end
+			end
+			dv_cnt <= dv_cnt + 7'd1;
+			if (dv_cnt == 7'd63) nstate = ST_DIVEND;
+		end
+
+		ST_DIVEND: begin
+			res = dv_dneg ? (~dv_q[31:0] + 32'd1) : dv_q[31:0];
+			sr[3:1] = 3'b000;
+			sr[1] = (res == 32'd0); sr[2] = res[31];
+			write_dst(dv_dg, dv_di, dv_r[31:0]);
+write_dst(dv_dg, dv_di + 6'd1, res);
+fin_req = 1'b1;
+nstate = ST_XW;
+		end
+
+		ST_MUL: begin
+			mp <= $signed({msg & mA[31], mA}) * $signed({msg & mB[31], mB});
+			p_ll <= $signed(mB[15:0]) * $signed(mA[15:0]);
+			p_hh <= $signed(mB[31:16]) * $signed(mA[31:16]);
+			p_lh <= $signed(mB[15:0]) * $signed(mA[31:16]);
+			p_hl <= $signed(mB[31:16]) * $signed(mA[15:0]);
+			nstate = ST_MUL2;
+		end
+
+		ST_MUL2: begin
+			fin_req = 1'b1;
+			nstate = ST_XW;
+			case (mk)
+				2'd1: begin // mulsu: 64-bit product to a register pair
+					sr[2:1] = {mp[63], mp[63:0] == 64'd0};
+					write_raw(m_dg, m_di, mp[63:32]);
+					write_raw(m_dg, m_di1, mp[31:0]);
+				end
+				2'd0: begin // mul: low word
+					sr[2:1] = {mp[31], mp[31:0] == 32'd0};
+					write_raw(m_dg, m_di, mp[31:0]);
+				end
+				default: begin // extend
+					case (x_ext)
+						4'd0, 4'd1: wq_push(1'b1, 1'b1, 6'd15, mp[31:0]);                  // 0x0100, 0x0102
+						4'd2, 4'd3: begin wq_push(1'b1, 1'b1, 6'd14, mp[63:32]); wq_push(1'b1, 1'b1, 6'd15, mp[31:0]); end
+						4'd4: wq_push(1'b1, 1'b1, 6'd15, G[15] + mp[31:0]);                 // 0x010a
+						4'd5: begin                                                          // 0x010e
+							dw = {G[14], G[15]} + mp[63:0];
+							wq_push(1'b1, 1'b1, 6'd14, dw[63:32]); wq_push(1'b1, 1'b1, 6'd15, dw[31:0]);
+						end
+						4'd6: wq_push(1'b1, 1'b1, 6'd15, G[15] - mp[31:0]);                 // 0x011a
+						4'd7: begin                                                          // 0x011e
+							dw = {G[14], G[15]} - mp[63:0];
+							wq_push(1'b1, 1'b1, 6'd14, dw[63:32]); wq_push(1'b1, 1'b1, 6'd15, dw[31:0]);
+						end
+						// half-word DSP forms. MAME's get_lhs is the LOW half, get_rhs the HIGH half.
+						4'd8: wq_push(1'b1, 1'b1, 6'd15, G[15] + p_ll + p_hh);              // 0x002a
+						4'd9: begin                                                          // 0x002e
+							dw = {G[14], G[15]} + {{32{p_ll[31]}}, p_ll} + {{32{p_hh[31]}}, p_hh};
+							wq_push(1'b1, 1'b1, 6'd14, dw[63:32]); wq_push(1'b1, 1'b1, 6'd15, dw[31:0]);
+						end
+						4'd10: begin                                                         // 0x0046
+							wq_push(1'b1, 1'b1, 6'd14, p_ll - p_hh); wq_push(1'b1, 1'b1, 6'd15, p_lh + p_hl);
+						end
+						default: begin // 16'h004e
+							wq_push(1'b1, 1'b1, 6'd14, G[14] + p_ll - p_hh); wq_push(1'b1, 1'b1, 6'd15, G[15] + p_lh + p_hl);
+						end
+					endcase
+				end
+			endcase
+		end
+
+		// the frame is built once the queue is empty and the instructions before have retired
+		ST_FRM: if (wq_cnt != wq_rd || rq_n != 3'd0) begin
+			nstate = ST_FRM;
+		end else begin
+			apply_frame;
+			if (frm_kind == 2'd2) begin
+				nstate = ST_XW;
+				retire_npc <= pc; retire_sr <= sr;
+			end else if (ret_pend) begin
+				ret_pend = 1'b0;
+				ret_loop_start;
+			end else begin
+				fin_req = frm_fin;
+				nstate = ST_XW;
+				tt_fin = !frm_fin;     // a trace trap: the instruction before it retires with this PC and SR
+			end
+		end
+
+		default: nstate = ST_RESET;
+		endcase
+		if (w1) w1_push;   // [EO]
+		// [EO] fw_n and fwa_n as R uses them: go_ovl comes only beside a fast instruction's clock (its one write is
+		// w1's, res) or a load's last access (its one or two results), so not every push's value is a source
+		fl_v  = p_io ? bus_rdata : lane_ext(bus_rdata, bus_addr, p_kind);
+		fwa_n = (p_n == 2'd2) ? p_r0 : fl_v;
+		fw_n  = (state == ST_MWAIT) ? (p_w1_en ? fl_v : fwa_n) : res;
+
+		// ---- end of cycle: global register commit, register-file write pipeline, completion
+		commit_glob;
+		l_we_r <= l_we_n; l_wa_r <= l_wa_n; l_wd_r <= l_wd_n;
+		r_new = tt_fin;
+		if (frm_req) begin
+			nstate = ST_FRM;
+		end else if (fin_req) begin
+			post_instr;
+			if (frm_req) nstate = ST_FRM;   // the trace trap: the instruction retires once the frame is built
+			else r_new = 1'b1;
+		end
+		// retirement, in order, once the instruction's queued writes have committed
+		r_pop = rq_n != 3'd0 && ((commit_seq - rq_end[rq_rp]) & 4'h8) == 4'h0;
+		if (r_pop) begin
+			retire <= 1'b1;
+			retire_pc <= rq_pc[rq_rp];
+			retire_npc <= rq_late[rq_rp] ? pc : rq_npc[rq_rp];
+			retire_sr <= rq_late[rq_rp] ? sr : rq_sr[rq_rp];
+			rq_rp <= rq_rp + 2'd1;
+		end
+		r_push = 1'b0;
+		if (r_new) begin
+			if (rq_n == 3'd0 && commit_seq == push_seq) begin
+				retire <= 1'b1;
+				retire_pc <= ipc; retire_npc <= pc; retire_sr <= sr;
+			end else begin
+				rq_pc[rq_wp] <= ipc; rq_npc[rq_wp] <= pc; rq_sr[rq_wp] <= sr;
+				rq_end[rq_wp] <= push_seq; rq_late[rq_wp] <= x_srw;
+				rq_wp <= rq_wp + 2'd1;
+				r_push = 1'b1;
+			end
+		end
+		rq_n <= rq_n + {2'b0, r_push} - {2'b0, r_pop};
+`ifdef SIMULATION
+		if (rq_n == 3'd4 && r_push && !r_pop) $display("RQ_OVERFLOW pc=%08x", ipc);
+`endif
+		// D into X
+		if (go && !frm_req) begin
+			nstate = ST_EXEC;
+			op <= d_op; e1 <= d_e1; e2 <= d_e2; op_x <= d_op; ilen_x <= d_ilen;
+			ipc <= d_ipc; x_npc <= d_npc;
+			x_fast <= d_fast;
+			x_brk <= (d_op[15:12] == 4'he || d_op[15:12] == 4'hf) && d_op[11:8] <= 4'hc && !delay_slot && !sr[16];
+			x_pred <= d_pred;
+			x_ext <= ext_code(d_e1);
+			x_wloc <= d_fast && d_wr && d_op[9];
+			x_wglob <= d_fast && d_wr && !d_op[9];
+			x_srw = 1'b0;
+			x_seq <= x_seq + 32'd1;
+		end
+		lS_q  <= (go_ovl && m_lS)  ? fw_n : (go_ovl && ma_lS)  ? fwa_n : lS_t;
+		lS1_q <= (go_ovl && m_lS1) ? fw_n : (go_ovl && ma_lS1) ? fwa_n : lS1_t;
+		lD_q  <= (go_ovl && m_lD)  ? fw_n : (go_ovl && ma_lD)  ? fwa_n : lD_t;
+		lD1_q <= (go_ovl && m_lD1) ? fw_n : (go_ovl && ma_lD1) ? fwa_n : lD1_t;
+		gS_q  <= (go_ovl && m_gS)  ? fw_n : (go_ovl && ma_gS)  ? fwa_n : gS_t;
+		gS1_q <= (go_ovl && m_gS1) ? fw_n : (go_ovl && ma_gS1) ? fwa_n : gS1_t;
+		gD_q  <= (go_ovl && m_gD)  ? fw_n : (go_ovl && ma_gD)  ? fwa_n : gD_t;
+		gD1_q <= (go_ovl && m_gD1) ? fw_n : (go_ovl && ma_gD1) ? fwa_n : gD1_t;
+		gM_q  <= (go_ovl && m_gM)  ? fw_n : (go_ovl && ma_gM)  ? fwa_n : gM_t;
+		gMD_q <= (go_ovl && m_gMD) ? fw_n : (go_ovl && ma_gMD) ? fwa_n : gMD_t;
+		state <= nstate;
+
+		//--------------------------------------------------------------
+		// F: refill D when it went into X (or is empty), from the block holding fpc and the one after it, each
+		// from either kept block or from the instruction port in this clock
+		ackv = if_req && if_ack;
+		b0 = fpc[31:3]; b1 = b0 + 29'd1;
+		hA = 1'b1;
+		if (fc_valid && fc_addr == b0) dA = fc_data;
+		else if (pf_valid && pf_addr == b0) dA = pf_data;
+		else if (ackv && if_addr == b0) dA = if_data;
+		else begin hA = 1'b0; dA = fc_data; end
+		hB = 1'b1;
+		if (pf_valid && pf_addr == b1) dB = pf_data;
+		else if (fc_valid && fc_addr == b1) dB = fc_data;
+		else if (ackv && if_addr == b1) dB = if_data;
+		else begin hB = 1'b0; dB = pf_data; end
+		p0 = {1'b0, fpc[2:1]}; p1 = p0 + 3'd1; p2 = p0 + 3'd2;
+		fw0 = hw_of(dA, p0[1:0]);
+		fw1 = p1[2] ? hw_of(dB, p1[1:0]) : hw_of(dA, p1[1:0]);
+		fw2 = p2[2] ? hw_of(dB, p2[1:0]) : hw_of(dA, p2[1:0]);
+		fh1 = p1[2] ? hB : hA;
+		fh2 = p2[2] ? hB : hA;
+		fn1 = need_e1(fw0);
+		fn2 = fn1 && need_e2(fw0, fw1);
+		flen = fn2 ? 2'd3 : fn1 ? 2'd2 : 2'd1;
+		// BR (0xf0-0xfc) is predicted taken: F goes on from its target
+		fbr = fw0[15:12] == 4'hf && fw0[11:8] <= 4'hc;
+		fofs = fw0[7] ? {(fw1[0] ? 9'h1ff : 9'h000), fw0[6:0], fw1[15:1], 1'b0}
+		              : {(fw0[0] ? 25'h1ffffff : 25'h0), fw0[6:1], 1'b0};
+		ftgt = fpc + {29'd0, flen, 1'b0} + fofs;
+		ftake = (!d_valid || (go && !frm_req)) && hA && (!fn1 || fh1) && (!fn2 || fh2);
+		fcross = ftake && (p0 + {1'b0, flen}) >= 3'd4;
+		if (ftake) begin
+			d_valid <= 1'b1;
+			d_op <= fw0; d_e1 <= fw1; d_e2 <= fw2; d_ilen <= flen;
+			d_ipc <= fpc; d_npc <= fpc + {29'd0, flen, 1'b0};
+			d_pred <= fbr;
+			fpc <= fbr ? ftgt : fpc + {29'd0, flen, 1'b0};
+		end else if (go && !frm_req) d_valid <= 1'b0;
+		// keep the block holding the next fpc and the one after it; request the first of them not held
+		if (fcross) begin
+			fc_valid <= hB; fc_addr <= b1; fc_data <= dB;
+			pf_valid <= 1'b0;
+		end else begin
+			fc_valid <= hA; fc_addr <= b0; fc_data <= dA;
+			pf_valid <= hB; pf_addr <= b1; pf_data <= dB;
+		end
+		nb = fcross ? b1 : b0;
+		if (fcross ? !hB : !hA) begin if_req <= 1'b1; if_addr <= nb; end
+		else if (fcross || !hB) begin if_req <= 1'b1; if_addr <= nb + 29'd1; end
+		else if_req <= 1'b0;
+		if (ftake && fbr) begin if_req <= 1'b1; if_addr <= ftgt[31:3]; end
+		// a store into a kept block, D, the blocks at fpc or the one being fetched: fetch again from D
+		if (st_hit && st_code) begin
+			fc_valid <= 1'b0; pf_valid <= 1'b0; d_valid <= 1'b0; if_req <= 1'b0;
+			fpc <= d_valid ? d_ipc : fpc;
+		end
+		// a change of PC: start again from it
+		if (redir) begin
+			d_valid <= 1'b0;
+			fpc <= pc;
+			if_req <= 1'b1; if_addr <= pc[31:3];
+		end
+	end
+end
+
+//------------------------------------------------------------------
+// load/store execute helpers (called from ST_EXEC)
+//------------------------------------------------------------------
+reg [31:0] ls_dreg, ls_sreg, ls_sregf, ls_base;
+reg        ls_ptr_ok;
+reg [5:0]  ls_sidx, ls_didx, ls_sidxf;
+reg        ls_dg, ls_sg;
+reg [31:0] ls_ea;
+reg [31:0] ls_upd;
+reg        ls_range;
+
+task job_start(input wr, input io, input [2:0] kind, input [1:0] n,
+               input [31:0] a0, input [31:0] a1, input [31:0] w0, input [31:0] w1);
+	begin
+		p_wr <= wr; p_io <= io; p_kind <= kind; p_n <= n; p_k <= 2'd0;
+		p_a0 <= a0; p_a1 <= a1; p_wd0 <= w0; p_wd1 <= w1;
+		// the first access goes out in this cycle
+		bus_req <= 1'b1; bus_wr <= wr; bus_io <= io;
+		bus_addr <= a0; bus_be <= io ? 4'b1111 : be_of(a0, kind); bus_wdata <= wd_of(a0, kind, w0);
+		nstate = ST_MWAIT;
+		fin_req = 1'b0;
+	end
+endtask
+
+task exec_ldst;
+	reg is_st, is_n;
+	reg [1:0] sub;
+	reg same;
+	begin
+		is_st = opc[3];
+		is_n  = opc[2];
+		sub   = e1[13:12];
+		ls_dg = !dl; ls_sg = !sl;
+		ls_didx = dl ? didx : {2'b0, dc};
+		ls_sidx = sl ? sidx : {2'b0, sc};
+		ls_sidxf = sl ? sidx1 : ({2'b0, sc} + 6'd1);
+		ls_dreg = dl ? lD_r : ((dc == 4'd1) ? 32'd0 : gD_r);
+		if (is_n) ls_dreg = dl ? lD_r : gD_r;
+		ls_sreg = (!sl && sc == 4'd1) ? 32'd0 : sreg;
+		ls_sregf = sl ? lS1_r : (sc == 4'd1 ? 32'd0 : gS1_r);
+		if (!is_st) ls_sregf = 32'd0;
+
+		if (is_n && !dl && dc <= 4'd1) begin
+			// MAME: PC/SR as the pointer register does nothing
+		end else if (((!is_n) && (dl || dc != 4'd1) && ls_dreg == 32'd0)) begin
+			req_exc(TRAP_RANGE);
+		end else if (is_n && ls_dreg == 32'd0) begin
+			case (sub)
+				2'd0, 2'd1: ls_upd = extra_s;
+				2'd2: ls_upd = extra_s & 32'hfffffffe;
+				default: ls_upd = extra_s & 32'hfffffffc;
+			endcase
+			write_raw(ls_dg, ls_didx, (ls_dg ? gD_r : lD_r) + ls_upd);
+			req_exc(TRAP_RANGE);
+		end else begin
+			same = (dl != sl) || (ls_sidx != ls_didx);
+			p_exc <= 1'b0; p_b_en <= 1'b0; p_w0_en <= 1'b0; p_w1_en <= 1'b0;
+			p_b_g <= ls_dg; p_b_i <= ls_didx;
+			p_w0_g <= ls_sg; p_w0_i <= ls_sidx;
+			p_w1_g <= ls_sg; p_w1_i <= ls_sidxf;
+			if (!is_st) begin
+				// loads
+				p_w0_en <= 1'b1;
+				case (sub)
+				2'd0: begin // LDBS
+					ls_ea = is_n ? ls_dreg : ls_dreg + extra_s;
+					job_start(1'b0, 1'b0, 3'd2, 2'd1, ls_ea, 32'd0, 32'd0, 32'd0);
+					if (is_n && same) begin write_raw(ls_dg, ls_didx, ls_dreg + extra_s); end
+				end
+				2'd1: begin // LDBU
+					ls_ea = is_n ? ls_dreg : ls_dreg + extra_s;
+					job_start(1'b0, 1'b0, 3'd1, 2'd1, ls_ea, 32'd0, 32'd0, 32'd0);
+					if (is_n && same) begin write_raw(ls_dg, ls_didx, ls_dreg + extra_s); end
+				end
+				2'd2: begin // LDHS / LDHU
+					ls_ea = is_n ? ls_dreg : ls_dreg + (extra_s & 32'hfffffffe);
+					job_start(1'b0, 1'b0, extra_s[0] ? 3'd4 : 3'd3, 2'd1, ls_ea, 32'd0, 32'd0, 32'd0);
+					if (is_n && same) begin write_raw(ls_dg, ls_didx, ls_dreg + (extra_s & 32'hfffffffe)); end
+				end
+				default: begin
+					case (extra_s[1:0])
+					2'd0: begin // LDW
+						ls_ea = is_n ? ls_dreg : ls_dreg + extra_s;
+						job_start(1'b0, 1'b0, 3'd0, 2'd1, ls_ea, 32'd0, 32'd0, 32'd0);
+						if (is_n && same) begin write_raw(ls_dg, ls_didx, ls_dreg + extra_s); end
+					end
+					2'd1: begin // LDD
+						ls_ea = is_n ? ls_dreg : ls_dreg + (extra_s & 32'hfffffffe);
+						job_start(1'b0, 1'b0, 3'd0, 2'd2, ls_ea, ls_ea + 32'd4, 32'd0, 32'd0);
+						p_w1_en <= 1'b1;
+						// MAME: base update skipped when it is either destination register
+						if (is_n && ((dl != sl) || (ls_sidx != ls_didx && ls_sidxf != ls_didx))) begin
+							write_raw(ls_dg, ls_didx, ls_dreg + (extra_s & 32'hfffffffe));
+						end
+					end
+					2'd2: begin
+						if (is_n) begin
+							// reserved
+							nstate = ST_XW; p_w0_en <= 1'b0;  
+						end else begin // LDW.IOD
+							ls_ea = ls_dreg + (extra_s & 32'hfffffffc);
+							job_start(1'b0, 1'b1, 3'd0, 2'd1, ls_ea, 32'd0, 32'd0, 32'd0);
+						end
+					end
+					default: begin
+						if (is_n) begin // LDW.S: stack space
+							if (ls_dreg < G[18]) begin
+								job_start(1'b0, 1'b0, 3'd0, 2'd1, ls_dreg, 32'd0, 32'd0, 32'd0);
+							end else begin
+								p_r0 <= lA;
+								nstate = ST_MPOST;  fin_req = 1'b0;
+							end
+							if (same) begin write_raw(ls_dg, ls_didx, ls_dreg + (extra_s & 32'hfffffffc)); end
+						end else begin // LDD.IOD
+							ls_ea = ls_dreg + (extra_s & 32'hfffffffc);
+							job_start(1'b0, 1'b1, 3'd0, 2'd2, ls_ea, ls_ea + 32'h2000, 32'd0, 32'd0);
+							p_w1_en <= 1'b1;
+						end
+					end
+					endcase
+				end
+				endcase
+			end else begin
+				// stores
+				ls_range = 1'b0;
+				case (sub)
+				2'd0: begin // STBS
+					ls_ea = is_n ? ls_dreg : ls_dreg + extra_s;
+					ls_range = !(ls_sreg[31:8] == 24'd0) && !(ls_sreg[31:7] == {25{ls_sreg[7]}});
+					job_start(1'b1, 1'b0, 3'd1, 2'd1, ls_ea, 32'd0, ls_sreg, 32'd0);
+					if (is_n) begin write_raw(ls_dg, ls_didx, ls_dreg + extra_s); end
+					p_exc <= ls_range;
+				end
+				2'd1: begin // STBU
+					ls_ea = is_n ? ls_dreg : ls_dreg + extra_s;
+					job_start(1'b1, 1'b0, 3'd1, 2'd1, ls_ea, 32'd0, ls_sreg, 32'd0);
+					if (is_n) begin write_raw(ls_dg, ls_didx, ls_dreg + extra_s); end
+				end
+				2'd2: begin // STHS / STHU
+					ls_ea = is_n ? ls_dreg : ls_dreg + (extra_s & 32'hfffffffe);
+					ls_range = extra_s[0] && !(ls_sreg[31:16] == 16'd0) && !(ls_sreg[31:15] == {17{ls_sreg[15]}});
+					job_start(1'b1, 1'b0, 3'd3, 2'd1, ls_ea, 32'd0, ls_sreg, 32'd0);
+					if (is_n) begin write_raw(ls_dg, ls_didx, ls_dreg + (extra_s & 32'hfffffffe)); end
+					p_exc <= ls_range;
+				end
+				default: begin
+					case (extra_s[1:0])
+					2'd0: begin // STW
+						ls_ea = is_n ? ls_dreg : ls_dreg + (extra_s & 32'hfffffffe);
+						job_start(1'b1, 1'b0, 3'd0, 2'd1, ls_ea, 32'd0, ls_sreg, 32'd0);
+						if (is_n) begin write_raw(ls_dg, ls_didx, ls_dreg + extra_s); end
+					end
+					2'd1: begin // STD
+						ls_ea = is_n ? ls_dreg : ls_dreg + (extra_s & 32'hfffffffe);
+						if (is_n && ls_sidxf == ls_didx && (dl == sl) && !(!sl && sc == 4'd1)) ls_sregf = ls_dreg + (extra_s & 32'hfffffffe);
+						job_start(1'b1, 1'b0, 3'd0, 2'd2, ls_ea, ls_ea + 32'd4, ls_sreg, ls_sregf);
+						if (is_n) begin write_raw(ls_dg, ls_didx, ls_dreg + (extra_s & 32'hfffffffe)); end
+					end
+					2'd2: begin
+						if (is_n) begin
+							nstate = ST_XW;  
+						end else begin // STW.IOD
+							ls_ea = ls_dreg + (extra_s & 32'hfffffffc);
+							job_start(1'b1, 1'b1, 3'd0, 2'd1, ls_ea, 32'd0, ls_sreg, 32'd0);
+						end
+					end
+					default: begin
+						if (is_n) begin // STW.S
+							// MAME: when the pointer's own register-file slot is the target, the update adds to the stored value
+							// [EO] The update goes in the queue first, where it lands then not depending on the comparison
+							// with SP, and the store into the register file after it, left out when the slot is the
+							// update's own (MAME stores, then updates: the update's value is the one left).
+							write_raw(ls_dg, ls_didx, ((dl && ls_dreg >= G[18] && ls_dreg[7:2] == didx) ? ls_sreg : ls_dreg) + (extra_s & 32'hfffffffc));
+							if (ls_dreg < G[18]) begin
+								job_start(1'b1, 1'b0, 3'd0, 2'd1, ls_dreg, 32'd0, ls_sreg, 32'd0);
+							end else begin
+								if (!(dl && ls_dreg[7:2] == didx)) wq_push(1'b0, 1'b0, ls_dreg[7:2], ls_sreg);
+								nstate = ST_MPOST;  fin_req = 1'b0;
+							end
+						end else begin // STD.IOD
+							ls_ea = ls_dreg + (extra_s & 32'hfffffffc);
+							job_start(1'b1, 1'b1, 3'd0, 2'd2, ls_ea, ls_ea + 32'h2000, ls_sreg, ls_sregf);
+						end
+					end
+					endcase
+				end
+				endcase
+			end
+		end
+	end
+endtask
+
+// 0xd0-0xdf: register-indirect load/store, with optional post-increment
+task exec_regind;
+	reg is_st, is_dbl, is_pi;
+	reg [31:0] d;
+	begin
+		is_st = opc[3]; is_dbl = opc[1]; is_pi = opc[2];
+		ls_sg = !sl;
+		ls_sidx = sl ? sidx : {2'b0, sc};
+		ls_sidxf = sl ? sidx1 : ({2'b0, sc} + 6'd1);
+		d = lD_r;
+		ls_sreg = (!sl && sc == 4'd1) ? 32'd0 : sreg;
+		ls_sregf = sl ? lS1_r : ((sc == 4'd1) ? 32'd0 : gS1_r);
+		p_b_g <= 1'b0; p_b_i <= didx;
+		p_w0_g <= ls_sg; p_w0_i <= ls_sidx; p_w1_g <= ls_sg; p_w1_i <= ls_sidxf;
+		p_exc <= 1'b0; p_w0_en <= 1'b0; p_w1_en <= 1'b0; p_b_en <= 1'b0;
+		// MAME: STD.P reads the second source after the pointer update
+		if (is_st && is_pi && is_dbl && sl && sidx1 == didx) ls_sregf = d + 32'd8;
+		if (is_st && is_pi) wq_push(1'b0, 1'b0, didx, d + (is_dbl ? 32'd8 : 32'd4));   // MAME: updated before the store
+		// [EO] the zero pointer's update inside its branch: the write position in the other branch is then decoded
+		// from the opcode alone
+		if (d == 32'd0) begin
+			if (!is_st && is_pi) wq_push(1'b0, 1'b0, didx, d + (is_dbl ? 32'd8 : 32'd4));
+			req_exc(TRAP_RANGE);
+		end else begin
+			if (!is_st) begin
+				p_w0_en <= 1'b1; p_w1_en <= is_dbl;
+				if (is_pi) begin
+					// MAME: skipped when the pointer is also a destination
+					if (sl ? (is_dbl ? (sidx != didx && sidx1 != didx) : (sidx != didx)) : 1'b1) begin
+						write_raw(1'b0, didx, d + (is_dbl ? 32'd8 : 32'd4));
+					end
+				end
+				job_start(1'b0, 1'b0, 3'd0, is_dbl ? 2'd2 : 2'd1, d, d + 32'd4, 32'd0, 32'd0);
+			end else begin
+				job_start(1'b1, 1'b0, 3'd0, is_dbl ? 2'd2 : 2'd1, d, d + 32'd4, ls_sreg, ls_sregf);
+			end
+		end
+	end
+endtask
+
+endmodule

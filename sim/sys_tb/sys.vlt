@@ -1,0 +1,12 @@
+`verilator_config
+// main.cpp writes the download image straight into the chip model
+public_flat_rw -module "sdram_chip_model_wide" -var "mem"
+// +bustrace: the CPU's data accesses, compared with MAME's bus trace
+public_flat_rd -module "eo_main" -var "bus_req"
+public_flat_rd -module "eo_main" -var "bus_wr"
+public_flat_rd -module "eo_main" -var "bus_io"
+public_flat_rd -module "eo_main" -var "bus_ack"
+public_flat_rd -module "eo_main" -var "bus_be"
+public_flat_rd -module "eo_main" -var "bus_addr"
+public_flat_rd -module "eo_main" -var "bus_wdata"
+public_flat_rd -module "eo_main" -var "bus_rdata"

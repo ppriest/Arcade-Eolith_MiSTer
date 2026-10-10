@@ -45,7 +45,8 @@ Steps for a release:
    two builds of one commit at different seeds have differed in which games ran.
 7. Update `README.md`: History, Supported table, Status, Resource usage.
 
-**Current state:** <one line: what the latest build passes or fails, with the number>.
+**Current state:** `20261010` released: `3f882db`, seed 2, every clock meeting timing (clk_sys +0.867 ns);
+the parent sets' smoketest was a quick test by the user, not a sweep script (none ported yet).
 
 ## Submitting the core upstream
 

@@ -1,0 +1,8 @@
+`verilator_config
+// main.cpp writes the download image straight into the chip model
+public_flat_rw -module "sdram_chip_model_wide" -var "mem"
+// the 8052's program counter, for +pcwin
+public_flat_rd -module "jt8052_regs" -var "pc"
+// the sound CPU's A and SP, for +scpc
+public_flat_rd -module "jt8052_regs" -var "a"
+public_flat_rd -module "jt8052_regs" -var "sp"

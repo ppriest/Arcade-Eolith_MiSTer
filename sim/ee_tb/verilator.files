@@ -1,0 +1,2 @@
+rtl/eo_eeprom93cxx.sv
+sim/ee_tb/tb_ee.sv

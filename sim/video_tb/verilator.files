@@ -1,0 +1,4 @@
+rtl/memory/vh_dpram.sv
+rtl/memory/eo_dpram.sv
+rtl/eo_video.sv
+sim/video_tb/tb_video.sv
