@@ -35,6 +35,7 @@ module eo_qs1000 #(
 	input               latch_wr,
 	input       [7:0]   latch_d,
 	input               bal_pcb,         // mix balance: the PCB recording's, or MAME's (vh_qs1000_voice)
+	input               loop_pcb,        // looping and the key-off fade, or MAME's neither (vh_qs1000_voice)
 	input               grad,            // the Gradation 2D's wiring (static)
 	input               rxd,             // with grad: the sound CPU's TxD
 
@@ -228,7 +229,7 @@ reg  [127:0] rom_data;
 vh_qs1000_voice u_voice (
 	.clk(clk), .rst(rst),
 	.wr(wave_wr), .wr_off(x_addr[4:0]), .wr_data(x_dout),
-	.tick(tick), .bal_pcb(bal_pcb),
+	.tick(tick), .bal_pcb(bal_pcb), .loop_pcb(loop_pcb),
 	.rom_req(rom_req), .rom_line(rom_line), .rom_ack(rom_ack), .rom_data(rom_data),
 	.mix_valid(), .mix_l(), .mix_r(),
 	.out_l(out_l), .out_r(out_r),

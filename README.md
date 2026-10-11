@@ -3,7 +3,7 @@
 A MiSTer FPGA core for Eolith's Hyperstone arcade boards (MAME's `vegaeo.cpp`, `eolith.cpp` and
 `eolith16.cpp`), built with Quartus Prime 17.0.2 Lite for the DE10-nano.
 
-**Status: 22 sets on three boards. Crazy War, Hidden Catch and Hidden Catch 3 play on the board; a
+**Status: 23 sets on three boards. Crazy War, Hidden Catch and Hidden Catch 3 play on the board; a
 quick test of a number of the other sets ran them all.**
 
 ## Contents
@@ -72,6 +72,7 @@ recorded).
 | Penfan Girls - Step1. Mild Mind (set 1) | 1999 | Eolith | `penfan` | Gradation 2D | |
 | Penfan Girls - Step1. Mild Mind (set 2) | 1999 | Eolith | `penfana` | Gradation 2D | Clone of `penfan` |
 | Hidden Catch 3 (ver 1.00 / pcb ver 3.05) | 2000 | Eolith | `hidctch3` | Gradation 2D | Light pens (Controls) |
+| Raccoon World | 1998 | Eolith | `raccoon` | Gradation 2D | MACHINE_NOT_WORKING in MAME ("game animation & timers seem too fast?") |
 | Steal See | 2000 | Moov Generation / Eolith | `stealsee` | Gradation 2D | |
 | Fortress 2 Blue Arcade (World) (ver 1.01 / pcb ver 3.05) | 2001 | Eolith | `fort2b` | Gradation 2D | |
 | Fortress 2 Blue Arcade (Korea) (ver 1.00 / pcb ver 3.05) | 2001 | Eolith | `fort2ba` | Gradation 2D | Clone of `fort2b` |
@@ -79,9 +80,7 @@ recorded).
 
 ### Not yet
 
-| Name | Why |
-|-|-|
-| Raccoon World (`raccoon`) | MACHINE_NOT_WORKING in MAME |
+None: every set of the three drivers has an `.mra`.
 
 ### Out of scope for now
 
@@ -121,7 +120,7 @@ the driver give 15.64 kHz and 60 Hz measured.
 
 ## Installation
 
-A 64 MB SDRAM module is required: Crazy War and 16 of the 21 `eolith.cpp` sets are larger than 32 MB.
+A 64 MB SDRAM module is required: Crazy War and 16 of the 22 `eolith.cpp` sets are larger than 32 MB.
 
 * Take the latest `*.rbf` from `releases/` and put it in `_Arcade/cores`, renamed to drop the
   `Arcade-` prefix (`Arcade-Eolith_YYYYMMDD.rbf` becomes `Eolith_YYYYMMDD.rbf`). MiSTer launches
@@ -139,8 +138,27 @@ with a `mister.env` (see `scripts/deploy.py`).
 Joystick: Button 1 to Button 4, Start, Coin, Pause, Service Coin, Service Mode. The `.mra` names the
 buttons per game: Crazy War's button 1 is Shot, the Hidden Catch games' Mark, KlonDike+'s Pick.
 
-Hidden Catch 3: each player's left analog stick moves that player's light pen, with a cross drawn at
-its position (white for player 1, yellow for player 2); button 1 (Pen) presses it.
+Hidden Catch 3's light pens, set on the OSD's pen lines (shown only for this set):
+
+* **D-pad:** moves the player's pen a step a frame, one unit (two dots) for the first 12 frames it is held,
+  then three.
+* **Left analog stick**, per player: *Aim* (the default) puts the pen where the stick points whenever the
+  stick moves, and leaves it where the d-pad or the mouse put it while the stick is still; *D-pad* makes the
+  stick step like the d-pad; *Auto* does both: a full deflection steps, a partial one aims (an arcade stick on
+  a gamepad encoder gives only full ones).
+* **Mouse:** off by default; *Mouse aims* gives it to P1 or P2, whose pen it moves; its left button is that
+  player's Pen button.
+* **Crosshair:** a cross at each pen, magenta for player 1 and cyan for player 2 in a black outline;
+  *Crosshair* shows both, one or none.
+
+Button 1 (Pen) presses the pen.
+
+The game keeps a calibration offset for each pen in its EEPROM (the `.nvm`); a blank one is exact. The
+service menu's TEST MODE, PEN TEST shows where the game puts each pen and stores a new offset from a
+click: click only with the cross on the centre mark, or later clicks land off target. A press that flashes
+the screen and marks nothing is aiming outside the pictures after a bad calibration; deleting the `.nvm`
+restores it. Without an `.nvm` the `.mra`'s default EEPROM applies: the game's defaults with English text and
+both offsets zero.
 
 Keyboard, MAME's defaults: arrows / R F D G, buttons LCtrl LAlt Space LShift Z X / A S Q W E,
 Start 1 / 2, Coin 5 / 6; F2 service switch, 9 / 0 service coins, P pause.
@@ -149,12 +167,14 @@ Start 1 / 2, Coin 5 / 6; F2 service switch, 9 / 0 service coins, P pause.
 
 Known issues:
 
-* **Nine sets still show generic button names** ("Button 1", "Button 2"): Candy Candy, Crazy War's
+* **Ten sets still show generic button names** ("Button 1", "Button 2"): Candy Candy, Crazy War's
   button 2, Fortress 2 Blue Arcade, Iron Fortress, Land Breaker, Linky Pipe, Penfan Girls, Puzzle King,
-  Steal See.
+  Raccoon World, Steal See.
 * The video timing is inferred, not measured (Video timing).
 * The core's speed against the original boards has not been measured on hardware.
-* Sound has not been compared with MAME by ear on the board.
+* Sound has not been compared with MAME by ear on the board. The QS1000 loops held notes and fades them at
+  key-off, as a PCB recording of Mission Craft does; MAME stops them at the sample's end. The fade has one
+  rate for every instrument (`docs/QS1000_FEATURES.md`).
 * The M6295's output (KlonDike+) has not been compared with MAME; nor have Hidden Catch 3's pens, which
   work on the board.
 
@@ -166,19 +186,22 @@ progress; `docs/LESSONS_LEARNED.md` is what it cost.
 
 * DIP switches from the `.mra` (`DIP;` in the OSD): done
 * Inputs: done; MAME's default keyboard mapping
-* CRT Adjust (H-Position, V-Shift, H-Size, V-Size): not yet
-* HDMI scaling (integer scale, crop, crop offset): integer scale done; crop not yet
-* HDMI rotation (orientation): n/a, every set is horizontal
+* CRT Adjust (H-Position, V-Shift, H-Size, V-Size): H-Position, V-Shift and H-Size (`rtl/video/eo_crt.sv`, rmonic79's
+  `crt_adjust.sv`); no V-Size. H-Size widens to the right: a larger picture needs H-Position moved left to fit the
+  line
+* HDMI scaling (integer scale, crop, crop offset): done (crop 216 or 224 of the 240 lines)
+* HDMI rotation (orientation): done (Off, CW, CCW), for a monitor on its side; every set is horizontal
 * Flip screen, HDMI and analog, from the OSD or the DIP (fake DIP where the game has none): done, from
   the OSD (no board here has a flip); checked in simulation on the three boards against MAME's frame
   turned 180 degrees (the unflipped scan-out is pixel-identical to MAME's)
-* HDMI-only options hidden under direct video: not yet
+* HDMI-only options hidden under direct video: done
 * Peripheral menus shown only for games that use them: n/a
 * Rotary joysticks (Ikari Warriors controls, GRS keystroke mode), where used: n/a
-* Light guns: mouse, analog stick and synthetic crosshair, where used: Hidden Catch 3's pens from the
-  analog sticks with a drawn cross; no mouse
+* Light guns: mouse, analog stick and synthetic crosshair, where used: done for Hidden Catch 3's pens:
+  d-pad, analog stick (Auto, Aim, D-pad), mouse, a cross per player
 * Audio mix (Mono, None, 25%, 50%): done (None, 25%, 50%, 100%)
-* Hiscore saving (`hiscore.v`, with autosave): not yet
+* Hiscore saving (`hiscore.v`, with autosave): not in this core. MAME's `hiscore.dat` covers only Iron Fortress,
+  Candy Candy and Land Breaker, whose scores sit in work RAM behind the CPU's caches
 * NVRAM / EEPROM saved to the `.nvm` file: done
 * Fast ROM loading via DDR: done
 * Pause (with CPU suspended): done
@@ -188,8 +211,7 @@ progress; `docs/LESSONS_LEARNED.md` is what it cost.
 
 ### Todo
 
-- [ ] The game's own button names for the nine sets above
-- [ ] CRT Adjust, hiscore saving, HDMI-only options hidden under direct video
+- [ ] The game's own button names for the ten sets above
 - [ ] Sound judged against MAME on the board
 - [ ] Frame times on the board against MAME's (the `Eolith_stp` revision's probes)
 - [ ] The video timing from a board measurement

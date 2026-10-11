@@ -12,7 +12,7 @@ module tb_video (
 	input      [17:2] cpu_addr,
 	input      [31:0] cpu_wdata,
 	output     [31:0] cpu_rdata,
-	input             cross_en,
+	input      [1:0]  cross_en,
 	input      [8:0]  cx1, cx2,
 	input      [7:0]  cy1, cy2,
 	output            vblank_flag,

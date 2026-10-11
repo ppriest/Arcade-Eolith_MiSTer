@@ -1,0 +1,3 @@
+rtl/video/crt_adjust.sv
+rtl/video/eo_crt.sv
+sim/crt_tb/tb_crt.sv

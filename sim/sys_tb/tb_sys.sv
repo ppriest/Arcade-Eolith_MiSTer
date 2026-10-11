@@ -7,6 +7,7 @@ module tb_sys (
 	input             prst,
 	input             rst,
 	input      [1:0]  board,
+	input      [5:0]  ws_mem3, ws_mem,  // memory wait states (eo_busws)
 	input             pause,
 	input      [15:0] p1p2,
 	input      [5:0]  system,
@@ -14,6 +15,8 @@ module tb_sys (
 	input             pens,             // hidctch3's light pens, at pen1_x/y
 	input      [7:0]  pen1_x,
 	input      [6:0]  pen1_y,
+	input      [7:0]  pen2_x,
+	input      [6:0]  pen2_y,
 
 	output            ce_pix,
 	output     [7:0]  vid_r,
@@ -29,6 +32,8 @@ module tb_sys (
 	output     [31:0] st_imiss,
 	output     [31:0] st_dmiss,
 	output     [127:0] perf_f,          // rtl/debug/eo_perf.sv, as the stp revision's probes
+	output     [1:0]  dbg_pen_rd,       // the CPU reads pen 2 / pen 1's port
+	output            dbg_trig_rd,      // it reads IN0 with P1's pen button down
 	output     [127:0] perf_c,
 	output            snd_latch_wr,
 	output     [7:0]  snd_latch,
@@ -71,9 +76,9 @@ assign s1_addr = grad ? c1_addr : q1_addr;
 assign s1_req  = grad ? c1_req : q1_req;
 
 eo_main u_main (
-	.clk(clk), .prst(prst), .rst(rst), .board(board), .pause(pause), .cpu_tick(cpu_tick), .ce_pix(ce_pix),
+	.clk(clk), .prst(prst), .rst(rst), .board(board), .pause(pause), .cpu_tick(cpu_tick), .ws_mem3(ws_mem3), .ws_mem(ws_mem), .ce_pix(ce_pix),
 	.p1p2(p1p2), .system(system), .dsw(dsw),
-	.flip(1'b0), .pens(pens), .pen1_x(pen1_x), .pen1_y(pen1_y), .pen2_x(8'd0), .pen2_y(7'd0),
+	.flip(1'b0), .pens(pens), .pen1_x(pen1_x), .pen1_y(pen1_y), .pen2_x(pen2_x), .pen2_y(pen2_y), .xh_en(2'b11),
 	.r(vid_r), .g(vid_g), .b(vid_b), .hblank(hblank), .vblank(vblank), .hsync(), .vsync(),
 	.snd_latch(snd_latch), .snd_latch_wr(snd_latch_wr),
 	.oki_wr(oki_wr), .oki_din(oki_din), .oki_dout(oki_dout),
@@ -83,7 +88,7 @@ eo_main u_main (
 	.mem_wrx(m2_wrx), .mem_dbl(m2_dbl), .mem_req(m2_req), .mem_ack(m2_ack),
 	.mem_dout(m2_dout), .mem_doutb(m2_doutb),
 	.retire(retire), .retire_pc(retire_pc), .retire_npc(), .retire_sr(),
-	.st_imiss(st_imiss), .st_dmiss(st_dmiss), .vbuf_out(vbuf), .vblank_flag(vblank_flag), .vbl_rd(vbl_rd)
+	.st_imiss(st_imiss), .st_dmiss(st_dmiss), .vbuf_out(vbuf), .vblank_flag(vblank_flag), .vbl_rd(vbl_rd), .dbg_pen_rd(dbg_pen_rd), .dbg_trig_rd(dbg_trig_rd)
 );
 wire vbl_rd;
 eo_perf u_perf (
@@ -94,7 +99,7 @@ eo_perf u_perf (
 eo_qs1000 u_snd (
 	.clk(clk), .rst(rst),
 	.dl_we(snd_dl_we && !snd_dl_addr[15]), .dl_addr(snd_dl_addr[14:0]), .dl_data(snd_dl_data),
-	.latch_wr(snd_latch_wr && !grad), .latch_d(snd_latch), .bal_pcb(1'b0),   // MAME's balance: the benches' reference
+	.latch_wr(snd_latch_wr && !grad), .latch_d(snd_latch), .bal_pcb(1'b0), .loop_pcb(1'b0),   // MAME's balance and no looping: the benches' reference
 	.grad(grad), .rxd(snd_txd),
 	.smp_addr(q0_addr), .smp_req(q0_req), .smp_ack(s0_ack), .smp_dout(m2_dout), .smp_doutb(m2_doutb),
 	.dat_addr(q1_addr), .dat_req(q1_req), .dat_ack(s1_ack), .dat_dout(m2_dout), .dat_doutb(m2_doutb),

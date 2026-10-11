@@ -53,6 +53,7 @@ module eo_main (
 	input      [1:0]  board,           // 0 Vega, 1 Gradation 2D, 2 eolith16 (the .mra's mod byte)
 	input             pause,
 	input             cpu_tick,        // the CPU's clock as an enable: drives its timer
+	input      [5:0]  ws_mem3, ws_mem, // memory wait states, clocks per access (rtl/eo_busws.sv)
 	input             ce_pix,
 
 	input      [15:0] p1p2,            // active low, a byte per player: U D L R, buttons 1-3, 1
@@ -62,6 +63,7 @@ module eo_main (
 	input             pens,            // hidctch3: light pens (the .mra's mod byte bit 2)
 	input      [7:0]  pen1_x, pen2_x,  // 0-159
 	input      [6:0]  pen1_y, pen2_y,  // 0-119
+	input      [1:0]  xh_en,           // the crosses drawn at the pens: P2, P1
 
 	output     [7:0]  r, g, b,
 	output            hblank, vblank, hsync, vsync,
@@ -109,7 +111,9 @@ module eo_main (
 	output     [31:0] st_dmiss,
 	output            vbuf_out,
 	output            vblank_flag,
-	output            vbl_rd           // a read of the port with the vblank bit (rtl/debug/eo_perf.sv)
+	output            vbl_rd,          // a read of the port with the vblank bit (rtl/debug/eo_perf.sv)
+	output     [1:0]  dbg_pen_rd,      // the CPU reads pen 2 / pen 1's port (probes, Eolith_stp)
+	output            dbg_trig_rd      // it reads IN0 with P1's pen button down
 );
 
 `include "eo_sdram_map.svh"
@@ -137,6 +141,13 @@ e1_pipe u_cpu (
 );
 
 // ---------------------------------------------------------------- memory
+// the board's memory timing, as an experiment (rtl/eo_busws.sv): the memory unit sees the request late
+wire        mem_bus_req;
+eo_busws u_ws (
+	.clk(clk), .rst(rst), .req(bus_req), .ack(bus_ack), .io(bus_io), .addr(bus_addr[31:29]),
+	.ws_mem3(ws_mem3), .ws_mem(ws_mem), .req_o(mem_bus_req)
+);
+
 wire        vid_vram_cs, vid_pal_cs, vid_we;
 wire [3:0]  vid_be;
 wire [17:2] vid_addr;
@@ -150,7 +161,7 @@ reg  [31:0] io_rdata;
 eo_cpumem #(.DATA_BASE(SD_DATA), .ROM_BASE(SD_PRG), .WRAM_BASE(SD_WRAM), .WRAM4_BASE(SD_WRAM4),
             .VOFF_BASE(SD_VOFF)) u_mem (
 	.clk(clk), .prst(prst), .rst(rst), .board(board), .vbuf(vbuf),
-	.bus_req(bus_req), .bus_wr(bus_wr), .bus_io(bus_io), .bus_addr(bus_addr),
+	.bus_req(mem_bus_req), .bus_wr(bus_wr), .bus_io(bus_io), .bus_addr(bus_addr),
 	.bus_be(bus_be), .bus_wdata(bus_wdata), .bus_ack(bus_ack), .bus_rdata(bus_rdata),
 	.la_req(la_req), .la_addr(la_addr),
 	.if_req(if_req), .if_addr(if_addr), .if_ack(if_ack), .if_data(if_data),
@@ -175,7 +186,7 @@ eo_video u_video (
 	.clk(clk), .ce_pix(ce_pix), .board(board), .vbuf(vbuf), .flip(flip),
 	.cpu_vram_cs(vid_vram_cs), .cpu_pal_cs(vid_pal_cs), .cpu_we(vid_we), .cpu_be(vid_be),
 	.cpu_addr(vid_addr), .cpu_wdata(vid_wd), .cpu_rdata(vid_rd),
-	.cross_en(grad && pens),
+	.cross_en({2{grad && pens}} & xh_en),
 	.cx1({pen1_x, 1'b0}), .cy1({pen1_y, 1'b0}), .cx2({pen2_x, 1'b0}), .cy2({pen2_y, 1'b0}),
 	.vblank_flag(vblank_flag),
 	.r(r), .g(g), .b(b), .hblank(hblank), .vblank(vblank), .hsync(hsync), .vsync(vsync)
@@ -205,6 +216,8 @@ wire k_spc  = e16 && io_addr[23:2] == 22'h3a8000;     // 0xffea0000
 wire k_inp  = e16 && io_addr[23:2] == 22'h3b0000;     // 0xffec0000
 assign oki_wr  = io_wr && k_oki && io_be[2];
 assign vbl_rd  = io_rd && (a_sys || g_in0 || k_spc);
+assign dbg_pen_rd  = {io_rd && g_pen2, io_rd && g_pen1};
+assign dbg_trig_rd = io_rd && g_in0 && pens && !p1p2[4];
 assign oki_din = io_wd[23:16];
 
 // MAME's machine().rand() & 0x300: a free-running LFSR

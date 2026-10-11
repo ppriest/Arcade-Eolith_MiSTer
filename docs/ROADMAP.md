@@ -61,7 +61,7 @@ Cross-cutting findings: [`LESSONS_LEARNED.md`](LESSONS_LEARNED.md). Working prac
   start): 4,711 of 4,711 QS1000 register writes and 1,805 of 1,805 sound CPU data reads as MAME's.
   `jt8052_periph.v` gained timer 2 (vendor mode `track`); MAME's power-on RxD level is copied
   (`docs/MAME_KLUDGES.md`).
-- Phase 4 step 6: an `.mra` for every `eolith.cpp` set but `raccoon` (MAME NOT_WORKING): 21 sets, clones
+- Phase 4 step 6: an `.mra` for every `eolith.cpp` set (`raccoon`, MAME NOT_WORKING, added later): 22 sets, clones
   under `_alternatives`, MAME's protection patch on the four AT89C52 sets (hidctch2 and landbrka checked
   against MAME's CPU view). hidctch3's light pens from the left analog sticks, with a cross drawn at each
   (mod byte bit 2); not checked against MAME. Button names come from the games' how-to-play screens; the
@@ -114,7 +114,7 @@ Cross-cutting findings: [`LESSONS_LEARNED.md`](LESSONS_LEARNED.md). Working prac
 - **Second: the `eolith.cpp` sets**, starting with the lightest in MAME (`hidnctch`, `nhidctch`,
   `penfan`, `stealsee`).
 - **Out:** `ghosteo.cpp` (no path to a 200 MHz ARM920T with MMU; shares only the QS1000).
-- **Memory:** 64 MB SDRAM module (user decision); `crazywar` and 16 of 21 `eolith.cpp` sets exceed
+- **Memory:** 64 MB SDRAM module (user decision); `crazywar` and 16 of 22 `eolith.cpp` sets exceed
   32 MB with no duplicate ROMs.
 
 ## Hardware reality: Crazy War (`vegaeo.cpp`)
@@ -345,11 +345,10 @@ First set: `hidnctch` (light in MAME, no protection).
    With eolith16 added it had missed by up to 0.575 ns (`7b80205`), every failing path inside `e1_pipe`'s
    register-write queue and operand forwarding (`docs/LESSONS_LEARNED.md`, Timing closure, `[Eolith]`).
    The worst path now runs into the queue entries (`debug/worst_paths_build14.rpt`).
-4. **`e1_pipe.sv` is a tracked copy** with this core's timing changes (`[EO]`, `rtl/e1/PROVENANCE.md`):
-   Vamphalf's later changes are merged by hand, and each merge reruns the conformance suite
-   (`scripts/e1_regress.py --replay --pipe` on Vamphalf's traces copied to `debug/e1`), Phase 0 item 2
-   and the `sys_tb` PC comparisons. The `[EO]` changes could go to Vamphalf, which runs the CPU at
-   56 MHz; editing Vamphalf from this session was refused by the permission check.
+4. **Vamphalf's E1 changes** land in Vamphalf first; each resync reruns the conformance suite
+   (`scripts/e1_regress.py --replay --pipe` on Vamphalf's traces copied to `debug/e1`), Phase 0 item 2 and
+   the `sys_tb` PC comparisons. This core's timing changes went upstream as Vamphalf `8f1f21c` (seed 3 there:
+   clk_sys +1.708 ns at 56 MHz, from +0.649 ns); `e1_pipe.sv` is again an unchanged copy.
 5. **Button 2's name.** The tutorial labels button 1 "SHOT"; button 2 has not been seen named.
 6. **Button names** for the `eolith.cpp` sets other than the Hidden Catch games, from manuals or the games'
    own screens; `validate_mra.py` holds them back until then.
@@ -359,9 +358,9 @@ First set: `hidnctch` (light in MAME, no protection).
 1. KlonDike+ and the flip screen on the board (Hidden Catch 3 works there, user report).
 2. Sound judged by ear on the board (Phase 3's exit): Crazy War and Hidden Catch.
 3. The other `eolith.cpp` sets on the board; their button names (Open items 6).
-4. The standard features still missing: CRT Adjust, hiscore, direct-video menu hiding. Done: DIPs,
-   Pause, NVRAM, fast load, audio mix, flip (simulation). HDMI rotation does not apply (every set is
-   ROT0).
+4. The standard features: done but hiscore, which the user dropped for this core (`hiscore.dat` has only ironfort,
+   candy and landbrk, in work RAM behind the CPU's caches). Done: direct-video menu hiding, crop, CRT Adjust
+   (`sim/crt_tb`), HDMI rotation, DIPs, Pause, NVRAM, fast load, audio mix, flip.
 5. Frame-time readings on the board with the stp revision (`rtl/debug/eo_perf.sv`) against
    `scripts/mame_flips.py`.
 6. Phase 6 (optional).

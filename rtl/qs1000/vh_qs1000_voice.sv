@@ -3,8 +3,11 @@
 //
 // MAME runs the engine at 24 MHz / 32 = 750 kHz: per tick every playing voice outputs one sample
 // (8-bit PCM, or OKI ADPCM decoded one nibble per address step), scaled by left/right and voice volume,
-// and advances its address by an 18-bit-fraction pitch accumulator. No envelope, no filter, no looping:
-// a voice stops at its loop end (all as MAME, which marks them TODO).
+// and advances its address by an 18-bit-fraction pitch accumulator. No envelope, no filter. With loop_pcb
+// low, as MAME: no looping, a voice stops at its loop end, and key-off does nothing. With loop_pcb high
+// (Arcade-Eolith_MiSTer docs/QS1000_FEATURES.md, Recording): a voice reaching its loop end goes back to its
+// loop start (ADPCM with the decoder state it had there, MAME's disabled save/restore), and key-off fades
+// it out (`env`) instead.
 //
 // Register writes (0x200-0x211 of the 8052's data space, `wr_*`) and ticks (`tick`) enter one queue in
 // arrival order and are applied in that order, so the output sequence is MAME's even when a key-on
@@ -28,6 +31,7 @@ module vh_qs1000_voice (
 	input       [7:0]  wr_data,
 	input              tick,            // 750 kHz
 	input              bal_pcb,         // 1: the PCB recording's balance (the core); 0: MAME's (benches). See S5
+	input              loop_pcb,        // 1: looping and the key-off fade (the core); 0: MAME's (benches)
 
 	output reg         rom_req,         // held until rom_ack
 	output reg  [19:0] rom_line,
@@ -96,9 +100,11 @@ always @(posedge clk) begin
 end
 
 // ---------------------------------------------------------------- voice state
-// {flags[1:0] (playing, adpcm), step[5:0], sig[11:0], aaddr[24:0], freq[15:0], acc[17:0],
+// {env[15:0], ssig[11:0], sstep[5:0], lstart[23:0],
+//  flags[1:0] (playing, adpcm), step[5:0], sig[11:0], aaddr[24:0], freq[15:0], acc[17:0],
 //  lend[23:0], start[23:0], addr[23:0]}
-localparam SW = 2 + 6 + 12 + 25 + 16 + 18 + 24 + 24 + 24;   // 151
+// ssig/sstep: the ADPCM decoder's state before the nibble at lstart; env: the key-off fade
+localparam SW = 16 + 12 + 6 + 24 + 2 + 6 + 12 + 25 + 16 + 18 + 24 + 24 + 24;   // 209
 reg  [SW-1:0] st_mem [0:31];
 reg  [SW-1:0] st_q;
 reg         st_we;
@@ -163,6 +169,11 @@ reg  [2:0]  kstep;              // key-on reads: 0,1 the table entry's line and 
 reg  [255:0] kbuf;              // the line holding kbase, then the next
 reg  [23:0] kbase;              // table entry, then descriptor address
 reg  [15:0] kfreq;
+// key-off fade: rel_v marks the voices keyed off since their key-on (loop_pcb). env -= env >> 8 on every
+// 732nd tick, a time constant of 256 x 732 ticks, 0.25 s at 750 kHz (HACKS.md: one rate for every sample)
+reg  [31:0] rel_v;
+reg  [9:0]  env_ctr;
+reg         env_go;             // this tick decays the fading voices
 
 // fetch unit: one request at a time, from the key-on sequence or the pipeline
 reg         f_busy;
@@ -206,6 +217,7 @@ wire [17:0] p_acc  = st_q[89:72];
 wire [23:0] p_lend = st_q[71:48];
 wire [23:0] p_start = st_q[47:24];
 wire [23:0] p_addr = st_q[23:0];
+// a looping voice never gets here at its loop end: S2 writes it back wrapped (s2_wrap)
 wire        p_stop = p_play && (p_addr >= p_lend);
 wire [25:0] p_pos  = {2'b0, p_start} + {p_aadr[24], p_aadr};
 wire        p_dec  = p_adp && (p_pos != {2'b0, p_addr});
@@ -254,6 +266,21 @@ reg  signed [17:0] r4_s;
 reg  signed [27:0] r5_pl, r5_pr;
 wire [18:0] s2_accsum = {1'b0, s2_st[89:72]} + {3'b0, s2_st[105:90]};
 wire [23:0] s2_addr_new = s2_st[23:0] + {23'd0, s2_accsum[18]};
+// loop_pcb: the nibble decoded is lstart's, so its pre-decode state is the one to restore at each wrap;
+// and the address after this tick reaches lend, so the voice is written back at lstart, its nibble index
+// one before, with that state: the next tick decodes and outputs lstart's sample, as MAME's disabled code
+// does on finding addr >= loop_end
+wire [23:0] s2_lst = s2_st[174:151];
+wire        s2_save = loop_pcb && s2_adp && s2_dec && (s2_st[47:24] + s2_na[23:0] == s2_lst);
+wire        s2_wrap = loop_pcb && (s2_lst < s2_st[71:48]) &&
+                      (s2_st[23:0] >= s2_st[71:48] || (s2_accsum[18] && s2_st[23:0] + 24'd1 == s2_st[71:48]));
+wire [5:0]  s2_rstep = s2_save ? s2_st[148:143] : s2_st[180:175];
+wire [11:0] s2_rsig  = s2_save ? s2_st[142:131] : s2_st[192:181];
+wire        s2_rel = loop_pcb && rel_v[s2_ch];
+wire [15:0] s2_env = s2_st[208:193];
+wire        s2_dead = s2_rel && s2_env[15:8] == 8'd0;          // faded below -48 dB: stopped
+wire [15:0] s2_vve = vv_q * s2_env[15:8];
+wire [15:0] s2_env_new = (s2_rel && env_go) ? s2_env - {8'd0, s2_env[15:8]} : s2_env;
 
 integer i;
 always @(posedge clk) begin
@@ -299,6 +326,9 @@ always @(posedge clk) begin
 		out_l <= 16'sd0; out_r <= 16'sd0;
 		for (i = 0; i < 18; i = i + 1) wave[i] <= 8'd0;
 		kch <= 5'd0;
+		rel_v <= 32'd0;
+		env_ctr <= 10'd0;
+		env_go <= 1'b0;
 	end else begin
 		r3_v <= 1'b0;
 		// line requests (demand and prefetch) go out when the fetch unit is free and no key-on is reading;
@@ -338,6 +368,7 @@ always @(posedge clk) begin
 					es <= E_IDLE;
 					case (q_head[12:8])
 						5'h00: begin
+							if (q_head[7:0] == 8'd2) rel_v[wave[14][4:0]] <= 1'b1;
 							if (q_head[7:0] == 8'd0) begin
 								kch <= wave[14][4:0];
 								vo_wa <= wave[14][4:0];
@@ -389,11 +420,15 @@ always @(posedge clk) begin
 						es <= E_KON;
 					end
 				end else begin
-					// descriptor (MAME start_voice): start = bytes 0-2, loop end = {byte 0 [7:4], byte 5 [3:0],
-					// bytes 6-7}; loop start unused
+					// descriptor (MAME start_voice): start = bytes 0-2, loop start = {byte 0 [7:4], bytes 3-4,
+					// byte 5 [7:4]}, loop end = {byte 0 [7:4], byte 5 [3:0], bytes 6-7}
 					st_we <= 1'b1;
 					st_wa <= kch;
-					st_wd <= {1'b1, kbuf[255 - 8*({1'b0, kbase[3:0]} + 5'd8) - 4],      // playing, adpcm (byte 8 bit 3)
+					rel_v[kch] <= 1'b0;
+					st_wd <= {16'hffff, 12'd0, 6'd0,                                 // env, saved decoder state
+					          kbuf[255 - 8*kbase[3:0] -: 4], kbuf[255 - 8*({1'b0, kbase[3:0]} + 5'd3) -: 16],
+					          kbuf[255 - 8*({1'b0, kbase[3:0]} + 5'd5) -: 4],        // loop start
+					          1'b1, kbuf[255 - 8*({1'b0, kbase[3:0]} + 5'd8) - 4],      // playing, adpcm (byte 8 bit 3)
 					          6'd0, 12'd0, 25'h1ffffff,                          // step, signal, adpcm address -1
 					          kfreq, 18'd0,
 					          kbuf[255 - 8*kbase[3:0] -: 4], kbuf[255 - 8*({1'b0, kbase[3:0]} + 5'd5) - 4 -: 4],
@@ -448,17 +483,17 @@ always @(posedge clk) begin
 					if (s2_st[150]) begin
 						st_we <= 1'b1;
 						st_wa <= s2_ch;
-						if (s2_stop) st_wd <= {1'b0, s2_st[149:0]};
+						if (s2_stop || s2_dead) st_wd <= {s2_st[208:151], 1'b0, s2_st[149:0]};
 						else begin
-							st_wd <= {s2_st[150:149],
-							          (s2_adp && s2_dec) ? s2_step_new : s2_st[148:143],
-							          s2_sig_out,
-							          (s2_adp && s2_dec) ? s2_na : s2_st[130:106],
-							          s2_st[105:90], s2_accsum[17:0], s2_st[71:24], s2_addr_new};
+							st_wd <= {s2_env_new, s2_rsig, s2_rstep, s2_lst, s2_st[150:149],
+							          s2_wrap ? s2_rstep : (s2_adp && s2_dec) ? s2_step_new : s2_st[148:143],
+							          s2_wrap ? s2_rsig : s2_sig_out,
+							          s2_wrap ? {1'b0, s2_lst - s2_st[47:24]} - 25'd1 : (s2_adp && s2_dec) ? s2_na : s2_st[130:106],
+							          s2_st[105:90], s2_accsum[17:0], s2_st[71:24], s2_wrap ? s2_lst : s2_addr_new};
 							r3_v <= 1'b1;
 							r3_adp <= s2_adp;
 							r3_res <= s2_res;
-							r3_vv <= vv_q;
+							r3_vv <= s2_rel ? s2_vve[15:8] : vv_q;
 							r3_lv <= lv_q;
 							r3_rv <= rv_q;
 						end
@@ -475,6 +510,8 @@ always @(posedge clk) begin
 			end
 			E_OUT: if (!r3_v && !r4_v && !r5_v) begin      // the last voice has been accumulated
 				mix_valid <= 1'b1;
+				env_go <= env_ctr == 10'd731;
+				env_ctr <= (env_ctr == 10'd731) ? 10'd0 : env_ctr + 10'd1;
 				mix_l <= acc_l;
 				mix_r <= acc_r;
 				dec_l <= dec_l + acc_l;

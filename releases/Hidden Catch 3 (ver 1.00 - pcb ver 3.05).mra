@@ -11,8 +11,9 @@
     <rotation>horizontal</rotation>
     <buttons names="Pen,-,-,-,Start,Coin,Pause,Service Coin,Service Mode" default="A,Start,Select,L,R" count="1"/>
 
-    <!-- mod byte (Eolith.sv): [1:0] board type, 0 Vega, 1 Gradation 2D, 2 eolith16; [2] light pens -->
-    <rom index="1"><part>05</part></rom>
+    <!-- mod byte (Eolith.sv): [1:0] board type, 0 Vega, 1 Gradation 2D, 2 eolith16; [2] light pens; then the
+         memory wait states, clocks per MEM3 and per MEM0-2 access (rtl/eo_busws.sv) -->
+    <rom index="1"><part>05 00 00</part></rom>
 
     <!-- address: the HPS puts the image in DDR3 and the core copies it to SDRAM (rtl/memory/vh_rom_loader.sv) -->
     <rom index="0" zip="hidctch3.zip" md5="none" address="0x30000000">
@@ -67,6 +68,26 @@
     <switches default="FF" base="0">
         <dip name="Service Mode" bits="0" ids="On,Off"/>
     </switches>
+
+    <!-- the default EEPROM (build_mra.py EEPROM_DEFAULT); a saved .nvm, sent at <nvram>, replaces it -->
+    <rom index="2"><part>
+        CB 06 03 02 00 01 01 00 FF FF FF FF FF FF FF FF FF FF FF FF 00 00 00 00 00 00 00 00 00 00 00 00
+        00 00 00 00 00 00 00 00 FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+        FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+        FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+        FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+        FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+        FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+        FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+        FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+        FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+        FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+        FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+        FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+        FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+        FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+        FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF FF
+    </part></rom>
 
     <!-- the .nvm: AT28C16 (Vega, 2 KB) or 93C66 (512 x 8) -->
     <nvram index="2" size="512"/>

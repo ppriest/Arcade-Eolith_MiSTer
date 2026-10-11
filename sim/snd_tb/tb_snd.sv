@@ -42,7 +42,7 @@ assign s1_addr = grad ? c1_addr : q1_addr;
 assign s1_req  = grad ? c1_req : q1_req;
 eo_qs1000 u_snd (
 	.clk(clk), .rst(rst), .dl_we(dl_we && !dl_addr[15]), .dl_addr(dl_addr[14:0]), .dl_data(dl_data),
-	.latch_wr(latch_wr && !grad), .latch_d(latch_d), .bal_pcb(1'b0), .grad(grad), .rxd(txd),
+	.latch_wr(latch_wr && !grad), .latch_d(latch_d), .bal_pcb(1'b0), .loop_pcb(1'b0), .grad(grad), .rxd(txd),
 	.smp_addr(s0_addr), .smp_req(s0_req), .smp_ack(s0_ack), .smp_dout(m_dout), .smp_doutb(m_doutb),
 	.dat_addr(q1_addr), .dat_req(q1_req), .dat_ack(s1_ack), .dat_dout(m_dout), .dat_doutb(m_doutb),
 	.out_l(), .out_r(), .dbg_drops(drops), .dbg_stalls(stalls), .dbg_xmiss(xmiss),

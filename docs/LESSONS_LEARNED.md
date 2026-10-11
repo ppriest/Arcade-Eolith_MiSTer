@@ -1036,6 +1036,18 @@ bus trace (`sys_tb +bustrace`) named it: hidnctch access 57,532, a read of 0x400
 latches the store for its update (`wl_*`, `gen_eo_cpumem.py`). Grep a reused CPU for address constants
 before giving it a new map, and compare data accesses, not only PCs.
 
+### [Eolith] Before probing a light gun's path, open the game's own pen test: calibration is saved state
+
+Hidden Catch 3's clicks registered in `sys_tb` and not on the board, while the board probe showed the
+game reading the same positions at the same rate. The bench starts from a blank EEPROM; the board loads
+the `.nvm`, and the game keeps a pen offset there (0x20-0x27: P1 X, P1 Y, P2 X, P2 Y, 16-bit
+sign-magnitude, in dots; a blank reads as zero). The service menu's PEN TEST shows each pen's position,
+offsets and raw read, and a click there stores the offset that moves the clicked point to the centre.
+The board's offset put the cross's centre at the screen's top-left, so clicks on the pictures landed
+outside them. Settled from the saved `.nvm` and MAME's PEN TEST driven through Lua (offsets `-10 -6`
+for `01 0a 01 06`; a centre click at pen 80, 60 writes `0000 0000`). Look for a calibration or test
+screen in the game first, and start the bench from the board's `.nvm` when the two disagree.
+
 ## Quartus synthesis gotchas (not visible in ModelSim)
 
 - **Non-blocking assignments to block-local (`automatic`) variables are rejected**, even with
@@ -1321,3 +1333,10 @@ before giving it a new map, and compare data accesses, not only PCs.
   with "Resource not accessible by personal access token (cloneTemplateRepository)" even with
   Administration write; the GraphQL mutation behind it is refused. The REST endpoint
   `POST repos/<owner>/<template>/generate` works with the same token. `new_core.py` uses it.
+- **[Eolith] Two sessions in one working tree share the git index: commit with `git commit -- <paths>`.**
+  `git add` then `git commit` takes whatever is staged, whoever staged it. In Arcade-Vamphalf_MiSTer the
+  other session's commit `841f2dd` took this session's staged QS1000 change. Before that, staging a file the
+  other session was still editing (`Limenko.sv`) committed its unfinished lines, which named ports its
+  uncommitted `lm_video.sv` had not yet got. `git commit -- <paths>` commits those paths' working-tree
+  contents and nothing else staged; `git commit-tree` with `git update-ref <ref> <new> <old>` adds a commit
+  without touching the index. A file both sessions edit is not safe to commit by path either: agree first.

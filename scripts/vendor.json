@@ -256,7 +256,7 @@
     {
       "path": "rtl/qs1000/vh_qs1000_voice.sv",
       "source": "vamphalf",
-      "commit": "c7ffb62e47579337e6c7f031dca817f7808ef4ac",
+      "commit": "e2c2e2768306e98a5f2a649fc4399184d39bb242",
       "mode": "copy"
     },
     {
@@ -268,8 +268,8 @@
     {
       "path": "rtl/e1/e1_pipe.sv",
       "source": "vamphalf",
-      "commit": "d6592349945f9bb5a6db73ebd03421d823d94e18",
-      "mode": "track"
+      "commit": "8f1f21c84a023cb9d26e32d928f8674c5ade0bf8",
+      "mode": "copy"
     },
     {
       "path": "rtl/sound/jt6295/LICENSE",
@@ -353,6 +353,18 @@
       "path": "scripts/e1_coverage.py",
       "source": "vamphalf",
       "commit": "31d2e79a98f54a497a08b727649833118cd1ff2e",
+      "mode": "copy"
+    },
+    {
+      "path": "rtl/video/screen_rotate_two.sv",
+      "source": "vamphalf",
+      "commit": "80e4789b837070ffd80dc7d0ed0b433a0fdc2c7d",
+      "mode": "copy"
+    },
+    {
+      "path": "rtl/video/crt_adjust.sv",
+      "source": "vamphalf",
+      "commit": "80e4789b837070ffd80dc7d0ed0b433a0fdc2c7d",
       "mode": "copy"
     }
   ]

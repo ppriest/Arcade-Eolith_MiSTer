@@ -25,6 +25,7 @@ assign VGA_DISABLE = 0;
 assign HDMI_FREEZE = 0;
 assign HDMI_BLACKOUT = 0;
 assign HDMI_BOB_DEINT = 0;
+assign FB_FORCE_BLANK = 0;
 
 assign LED_DISK  = 0;
 assign LED_POWER = 0;
@@ -43,6 +44,13 @@ assign AUDIO_R   = e16 ? oki_out : snd_r;
 
 wire [1:0] ar = status[122:121];
 
+// HDMI rotation for a monitor turned on its side (every set is ROT0): the aspect follows it
+wire [1:0] rot_sel    = status[64:63];
+wire       rotate_en  = rot_sel != 2'd0;
+wire       rotate_ccw = rot_sel == 2'd2;
+wire [11:0] base_arx  = rotate_en ? 12'd3 : 12'd4;
+wire [11:0] base_ary  = rotate_en ? 12'd4 : 12'd3;
+
 `ifdef DEBUG_ISSP
 localparam DEBUG_MENU_HIDE = 1'b0;
 `else
@@ -52,17 +60,35 @@ localparam DEBUG_MENU_HIDE = 1'b1;
 localparam CONF_STR = {
 	"Eolith;;",
 	"-;",
-	"O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
-	"O[68:66],Scale,Normal,V-Integer,Narrower HV-Integer,Wider HV-Integer;",
-	"O[46:44],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
+	// H5: the HDMI scaler's options, hidden under direct video, where they do nothing
+	"H5O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
+	"H5O[64:63],Rotation,Off,CW,CCW;",
+	"H5O[68:66],Scale,Normal,V-Integer,Narrower HV-Integer,Wider HV-Integer;",
+	"H5O[70:69],Crop,Off,216 lines,224 lines;",
+	"H5O[75:71],Crop offset,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
+	"H5O[46:44],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
+	"O[94],CRT Adjust,Off,On;",
+	"H3O[99:95],CRT H-Size,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
+	"H3O[106:100],CRT H-Position,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,+16,+17,+18,+19,+20,+21,+22,+23,+24,+25,+26,+27,+28,+29,+30,+31,+32,+33,+34,+35,+36,+37,+38,+39,+40,+41,+42,+43,+44,+45,+46,+47,+48,-48,-47,-46,-45,-44,-43,-42,-41,-40,-39,-38,-37,-36,-35,-34,-33,-32,-31,-30,-29,-28,-27,-26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
+	"H3O[112:107],CRT V-Shift,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,+16,+17,+18,+19,+20,+21,+22,+23,+24,+25,+26,+27,+28,+29,+30,+31,-32,-31,-30,-29,-28,-27,-26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
 	"O[48:47],Stereo Mix,None,25%,50%,100%;",
 	"O[10],Flip Screen,Off,On;",
+	// light pens (hidctch3, H2): per player, the left stick aims (Aim: light guns report through it), steps like
+	// the d-pad (D-pad), or both, a full deflection stepping and a partial one aiming (Auto: arcade sticks on
+	// gamepad encoders); the mouse is off unless given to a player
+	"H2-;",
+	"H2O[12:11],Crosshair,P1+P2,P1,P2,Off;",
+	"H2O[14:13],P1 stick,Aim,Auto,D-pad;",
+	"H2O[16:15],P2 stick,Aim,Auto,D-pad;",
+	"H2O[18:17],Mouse aims,Off,P1,P2;",
 	"-;",
 	"DIP;",
 	"-;",
 	"H1P1,Debug;",
 	"H1P1-;",
 	"H1P1O[82],Pause CPU,Off,On;",
+	"H1P1O[21:19],MEM3 wait (ROM I/O),0,4,8,12,15,20,24,32;",
+	"H1P1O[23:22],MEM0-2 wait (RAM),0,1,2,3;",
 	"-;",
 	"T[0],Reset;",
 	"R[0],Reset and close OSD;",
@@ -74,10 +100,12 @@ localparam CONF_STR = {
 };
 
 wire forced_scandoubler;
+wire direct_video;
 wire  [21:0] gamma_bus;
 wire   [1:0] buttons;
 wire [127:0] status;
 wire  [10:0] ps2_key;
+wire  [24:0] ps2_mouse;                 // [24] toggles a packet; Y [23:16], X [15:8], their signs [5], [4]; buttons [1:0]
 wire [31:0] joystick_0, joystick_1;
 wire [15:0] ana0, ana1;                 // analog -127..127: Y [15:8], X [7:0]
 
@@ -102,7 +130,9 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 	.buttons(buttons),
 	.status(status),
-	.status_menumask({14'd0, DEBUG_MENU_HIDE, 1'b0}),   // H1 Debug
+	.status_menumask({10'd0, direct_video, 1'b0, ~status[94], ~mod_byte[2], DEBUG_MENU_HIDE, 1'b0}),   // H1 Debug, H2 light pens,
+	                                                                                         // H3 CRT adjust, H5 HDMI scaler
+	.direct_video(direct_video),
 
 	.joystick_0(joystick_0),
 	.joystick_1(joystick_1),
@@ -123,7 +153,8 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.ioctl_din(ioctl_din),
 	.ioctl_rd(),
 
-	.ps2_key(ps2_key)
+	.ps2_key(ps2_key),
+	.ps2_mouse(ps2_mouse)
 );
 
 ///////////////////////   CLOCKS   ///////////////////////////////
@@ -191,12 +222,17 @@ end
 
 ///////////////////   .mra: mod byte   ///////////////////////////
 
-// <rom index="1">: [1:0] board type: 0 Vega, 1 Gradation 2D, 2 eolith16; [2] light pens (hidctch3)
-// (scripts/build_mra.py)
-reg [7:0] mod_byte = 8'd0;
+// <rom index="1">: byte 0 [1:0] board type: 0 Vega, 1 Gradation 2D, 2 eolith16; [2] light pens (hidctch3);
+// bytes 1, 2: the set's memory wait states, clocks per MEM3 and per MEM0-2 access (rtl/eo_busws.sv), absent
+// = none (scripts/build_mra.py)
+reg [7:0] mod_byte = 8'd0, ws3_mra = 8'd0, ws_mra = 8'd0;
 reg [7:0] dsw = 8'hff;                   // the .mra's <switches> (index 254), DSW1 bits 7:0
 always @(posedge clk_sys)
-	if (ioctl_wr && ioctl_index == 16'd1 && !ioctl_addr[0]) mod_byte <= ioctl_dout;
+	if (ioctl_wr && ioctl_index == 16'd1) begin
+		if (ioctl_addr == 27'd0) begin mod_byte <= ioctl_dout; ws3_mra <= 8'd0; ws_mra <= 8'd0; end
+		if (ioctl_addr == 27'd1) ws3_mra <= ioctl_dout;
+		if (ioctl_addr == 27'd2) ws_mra <= ioctl_dout;
+	end
 always @(posedge clk_sys)
 	if (ioctl_wr && ioctl_index == 16'd254 && ioctl_addr == 27'd0) dsw <= ioctl_dout;
 
@@ -213,26 +249,38 @@ wire  [1:0] svc_coin;
 mame_keys #(.BUTTONS(4), .START(8), .COIN(9), .PAUSE(10), .SERVICE(12)) u_keys (
 	.clk(clk_sys), .ps2_key(ps2_key), .key0(key0), .key1(key1), .svc_coin(svc_coin)
 );
-wire [31:0] joy0 = joystick_0 | key0;
-wire [31:0] joy1 = joystick_1 | key1;
+// hidctch3: the mouse's left button is the Pen button of the player it aims for (OSD H2)
+wire  [1:0] ms_to = mod_byte[2] ? (status[18:17] == 2'd1 ? 2'b01 : status[18:17] == 2'd2 ? 2'b10 : 2'b00) : 2'b00;
+wire [31:0] joy0 = joystick_0 | key0 | {27'd0, ms_to[0] & ps2_mouse[0], 4'd0};
+wire [31:0] joy1 = joystick_1 | key1 | {27'd0, ms_to[1] & ps2_mouse[0], 4'd0};
 wire [15:0] p1p2 = {eo_port(joy1), eo_port(joy0)};
 // Active low: COIN1 (P1's coin), COIN2 (P2's), START1, START2, SERVICE1, SERVICE (momentary, as MAME's
 // PORT_SERVICE_NO_TOGGLE); eo_main places them per board
 wire  [5:0] sys_in = ~{joy0[12] | joy1[12], joy0[11] | joy1[11] | svc_coin[0], joy1[8], joy0[8], joy1[9],
                        joy0[9]};
 
-// hidctch3's light pens from the left analog sticks: X to 0-159 (v * 5 / 8), Y to 0-119 (v * 15 / 32), v the
-// stick offset to 0-255; shifts and adds
-function automatic [7:0] pen_x(input [7:0] a);
-	reg [10:0] v; begin v = {3'd0, a ^ 8'h80}; pen_x = 8'(((v << 2) + v) >> 3); end
-endfunction
-function automatic [6:0] pen_y(input [7:0] a);
-	reg [12:0] v; begin v = {5'd0, a ^ 8'h80}; pen_y = 7'(((v << 4) - v) >> 5); end
-endfunction
+// hidctch3's light pens (rtl/eo_pens.sv): the d-pad steps a pen, the left stick as the OSD's H2 page says
+wire        core_hs, core_vs, core_hb, core_vb;
+reg         core_vb_d = 1'b0, ms_tog = 1'b0;
+always @(posedge clk_sys) begin core_vb_d <= core_vb; ms_tog <= ps2_mouse[24]; end
+wire  [7:0] pen1_x, pen2_x;
+wire  [6:0] pen1_y, pen2_y;
+eo_pens u_pens (
+	.clk(clk_sys), .reset(core_reset), .frame(core_vb && !core_vb_d), .flip(status[10]),
+	.ana0(ana0), .ana1(ana1), .dir0({joy0[3], joy0[2], joy0[1], joy0[0]}), .dir1({joy1[3], joy1[2], joy1[1], joy1[0]}),
+	.mode0(status[14:13]), .mode1(status[16:15]),
+	.ms_ev(ps2_mouse[24] ^ ms_tog), .ms_dx({ps2_mouse[4], ps2_mouse[15:8]}), .ms_dy({ps2_mouse[5], ps2_mouse[23:16]}),
+	.ms_to(ms_to),
+	.pen1_x(pen1_x), .pen1_y(pen1_y), .pen2_x(pen2_x), .pen2_y(pen2_y)
+);
 
-// flipped, the stick moves the pen the way the turned picture shows it
-function automatic [7:0] pen_fx(input [7:0] x); pen_fx = status[10] ? 8'd159 - x : x; endfunction
-function automatic [6:0] pen_fy(input [6:0] y); pen_fy = status[10] ? 7'd119 - y : y; endfunction
+// memory wait states (rtl/eo_busws.sv): the .mra's, or the Debug page's when set; MEM3's clocks per access
+function automatic [5:0] ws3_of(input [2:0] s);
+	case (s)
+		3'd0: ws3_of = 6'd0;  3'd1: ws3_of = 6'd4;  3'd2: ws3_of = 6'd8;  3'd3: ws3_of = 6'd12;
+		3'd4: ws3_of = 6'd15; 3'd5: ws3_of = 6'd20; 3'd6: ws3_of = 6'd24; default: ws3_of = 6'd32;
+	endcase
+endfunction
 
 // Pause: joystick bit 10 (or P) toggles; the Debug page's Pause CPU is ORed in
 wire pause_btn = joy0[10] | joy1[10];
@@ -286,18 +334,22 @@ sdram_download u_dl (
 	.dl_req(bdl_req), .dl_addr(bdl_addr), .dl_data(dl_data), .dl_we16(dl_we16), .dl_busy(ldr_active ? 1'b0 : dl_busy)
 );
 
-// the fast load's copy: DDR3 through ddram_phy into the download port's granule mode, the whole image
+// the fast load's copy: DDR3 through ddram_phy (muxed with the HDMI rotator, VIDEO) into the download port's
+// granule mode, the whole image
 wire        ldr_ddr_req, ldr_ddr_busy, ldr_ddr_valid;
 wire [27:0] ldr_ddr_addr;
 wire [63:0] ldr_ddr_rdata;
+wire [7:0]  ldr_DDRAM_BURSTCNT, ldr_DDRAM_BE;
+wire [28:0] ldr_DDRAM_ADDR;
+wire        ldr_DDRAM_RD, ldr_DDRAM_WE;
+wire [63:0] ldr_DDRAM_DIN;
 
-assign DDRAM_CLK = clk_sys;
 ddram_phy u_ldr_ddram (
 	.clk(clk_sys), .reset(~pll_locked),
-	.DDRAM_BUSY(DDRAM_BUSY), .DDRAM_BURSTCNT(DDRAM_BURSTCNT),
-	.DDRAM_ADDR(DDRAM_ADDR), .DDRAM_DOUT(DDRAM_DOUT),
-	.DDRAM_DOUT_READY(DDRAM_DOUT_READY), .DDRAM_RD(DDRAM_RD),
-	.DDRAM_DIN(DDRAM_DIN), .DDRAM_BE(DDRAM_BE), .DDRAM_WE(DDRAM_WE),
+	.DDRAM_BUSY(DDRAM_BUSY), .DDRAM_BURSTCNT(ldr_DDRAM_BURSTCNT),
+	.DDRAM_ADDR(ldr_DDRAM_ADDR), .DDRAM_DOUT(DDRAM_DOUT),
+	.DDRAM_DOUT_READY(DDRAM_DOUT_READY), .DDRAM_RD(ldr_DDRAM_RD),
+	.DDRAM_DIN(ldr_DDRAM_DIN), .DDRAM_BE(ldr_DDRAM_BE), .DDRAM_WE(ldr_DDRAM_WE),
 	.req(ldr_ddr_req), .we(1'b0), .addr(ldr_ddr_addr), .wdata(8'd0),
 	.busy(ldr_ddr_busy), .valid(ldr_ddr_valid), .rdata(ldr_ddr_rdata)
 );
@@ -334,8 +386,8 @@ wire  [5:0] m2_wrx;
 wire [63:0] m_dout, m_doutb;
 
 wire [7:0]  core_r, core_g, core_b;
-wire        core_hs, core_vs, core_hb, core_vb;
-wire        dbg_retire, vbuf, vblank_flag, vbl_rd;
+wire        dbg_retire, vbuf, vblank_flag, vbl_rd, dbg_trig_rd;
+wire  [1:0] dbg_pen_rd;
 wire [31:0] dbg_pc, dbg_imiss, dbg_dmiss;
 wire [7:0]  snd_latch;
 wire        snd_latch_wr;
@@ -363,6 +415,7 @@ eo_qs1000 #(.SNDPRG_BASE(SD_SNDPRG), .SMP_BASE(SD_SMP), .SMP_LINES(20'(({1'b0, S
 	.dl_we(lb_wr && lb_addr[26:15] == SD_SNDPRG[26:15]), .dl_addr(lb_addr[14:0]), .dl_data(lb_dout),
 	.latch_wr(snd_latch_wr && !grad), .latch_d(snd_latch),
 	.bal_pcb(1'b1),     // the balance of Vamphalf's QS1000 PCB recording (docs/MAME_KLUDGES.md, Sound)
+	.loop_pcb(1'b1),    // looping and the key-off fade, from the same recording (docs/QS1000_FEATURES.md)
 	.grad(grad), .rxd(snd_txd),
 	.smp_addr(q0_addr), .smp_req(q0_req), .smp_ack(s0_ack), .smp_dout(m_dout), .smp_doutb(m_doutb),
 	.dat_addr(q1_addr), .dat_req(q1_req), .dat_ack(s1_ack), .dat_dout(m_dout), .dat_doutb(m_doutb),
@@ -389,10 +442,13 @@ eo_sndcpu #(.DATA_BASE(SD_SNDDATA)) u_sndcpu (
 
 eo_main u_main (
 	.clk(clk_sys), .prst(~pll_locked), .rst(core_reset), .board(mod_byte[1:0]), .pause(pause_cpu), .cpu_tick(cpu_tick),
+	// the .mra's wait states unless the Debug page sets its own
+	.ws_mem3(status[21:19] != 3'd0 ? ws3_of(status[21:19]) : ws3_mra[5:0]),
+	.ws_mem(status[23:22] != 2'd0 ? {4'd0, status[23:22]} : ws_mra[5:0]),
 	.ce_pix(ce_pix), .p1p2(p1p2), .system(sys_in), .dsw(dsw),
 	.flip(status[10]),
-	.pens(mod_byte[2]), .pen1_x(pen_fx(pen_x(ana0[7:0]))), .pen1_y(pen_fy(pen_y(ana0[15:8]))),
-	.pen2_x(pen_fx(pen_x(ana1[7:0]))), .pen2_y(pen_fy(pen_y(ana1[15:8]))),
+	.pens(mod_byte[2]), .pen1_x(pen1_x), .pen1_y(pen1_y), .pen2_x(pen2_x), .pen2_y(pen2_y),
+	.xh_en(status[12:11] == 2'd0 ? 2'b11 : status[12:11] == 2'd1 ? 2'b01 : status[12:11] == 2'd2 ? 2'b10 : 2'b00),
 	.r(core_r), .g(core_g), .b(core_b), .hblank(core_hb), .vblank(core_vb), .hsync(core_hs), .vsync(core_vs),
 	.snd_latch(snd_latch), .snd_latch_wr(snd_latch_wr),
 	.oki_wr(oki_wr), .oki_din(oki_din), .oki_dout(oki_dout),
@@ -403,7 +459,7 @@ eo_main u_main (
 	.mem_addr(m2_addr), .mem_wrl(m2_wrl), .mem_wrh(m2_wrh), .mem_din(m2_din), .mem_dinx(m2_dinx),
 	.mem_wrx(m2_wrx), .mem_dbl(m2_dbl), .mem_req(m2_req), .mem_ack(m2_ack), .mem_dout(m_dout), .mem_doutb(m_doutb),
 	.retire(dbg_retire), .retire_pc(dbg_pc), .retire_npc(), .retire_sr(), .st_imiss(dbg_imiss), .st_dmiss(dbg_dmiss),
-	.vbuf_out(vbuf), .vblank_flag(vblank_flag), .vbl_rd(vbl_rd)
+	.vbuf_out(vbuf), .vblank_flag(vblank_flag), .vbl_rd(vbl_rd), .dbg_pen_rd(dbg_pen_rd), .dbg_trig_rd(dbg_trig_rd)
 );
 
 `ifdef DEBUG_ISSP
@@ -423,6 +479,29 @@ issp_probe #(.INSTANCE_ID("F"), .PROBE_W(128), .SOURCE_W(8)) u_issp_f (
 issp_probe #(.INSTANCE_ID("C"), .PROBE_W(128), .SOURCE_W(8)) u_issp_c (
 	.clk(clk_sys), .probe(perf_c), .source()
 );
+// Instance P: hidctch3's pens, the inputs and what the game reads (field table in scripts/read_issp.tcl). F's
+// source bit 0 clears the counts.
+reg  [15:0] pp_rd1 = 16'd0, pp_rd2 = 16'd0, pp_trig = 16'd0;
+reg  [7:0]  pp_press = 8'd0, pp_lx = 8'd0;
+reg  [6:0]  pp_ly = 7'd0;
+reg         pp_b1_d = 1'b0;
+always @(posedge clk_sys) begin
+	pp_b1_d <= joy0[4];
+	if (issp_src[0]) begin
+		pp_rd1 <= 16'd0; pp_rd2 <= 16'd0; pp_trig <= 16'd0; pp_press <= 8'd0;
+	end else begin
+		if (dbg_pen_rd[0]) begin pp_rd1 <= pp_rd1 + 16'd1; pp_lx <= pen1_x; pp_ly <= pen1_y; end
+		if (dbg_pen_rd[1]) pp_rd2 <= pp_rd2 + 16'd1;
+		if (dbg_trig_rd) pp_trig <= pp_trig + 16'd1;
+		if (joy0[4] && !pp_b1_d) pp_press <= pp_press + 8'd1;
+	end
+end
+issp_probe #(.INSTANCE_ID("P"), .PROBE_W(128), .SOURCE_W(8)) u_issp_p (
+	.clk(clk_sys),
+	.probe({pp_rd2, pp_press, pp_ly, pp_lx, pp_trig, pp_rd1, mod_byte[2], ps2_mouse[1:0], joy0[7:0], ana0,
+	        pen2_y, pen2_x, pen1_y, pen1_x}),
+	.source()
+);
 `endif
 
 // a chip needs a refresh every 7.8125 us, 447 clocks; refreshes alternate between the 128 MB module's chips
@@ -441,16 +520,31 @@ sdram #(.RFS_INTERVAL(10'd223)) u_sdram (
 
 wire vga_de_raw;
 
+// CRT adjust (rtl/video/eo_crt.sv, crt_adjust.sv vendored): H-Size, H-Position and V-Shift through a line buffer,
+// the syncs native; off under a forced scandoubler
+wire [7:0] crt_r, crt_g, crt_b;
+wire       crt_hs, crt_vs, crt_hb, crt_vb, crt_on, crt_ce;
+eo_crt u_crt (
+	.clk(clk_sys), .ce(ce_pix),
+	.adjust(status[94] & ~forced_scandoubler),
+	.hsize_idx(status[99:95]), .hpos_idx(status[106:100]), .vshift_idx(status[112:107]),
+	.r_in(core_r), .g_in(core_g), .b_in(core_b),
+	.hs_in(core_hs), .vs_in(core_vs), .hb_in(core_hb), .vb_in(core_vb),
+	.active(crt_on), .ce_out(crt_ce),
+	.r_out(crt_r), .g_out(crt_g), .b_out(crt_b),
+	.hs_out(crt_hs), .vs_out(crt_vs), .hb_out(crt_hb), .vb_out(crt_vb)
+);
+
 arcade_video #(.WIDTH(320), .DW(24), .GAMMA(1)) arcade_video
 (
 	.clk_video(clk_sys),
-	.ce_pix(ce_pix),
+	.ce_pix(crt_on ? crt_ce : ce_pix),
 
-	.RGB_in({core_r, core_g, core_b}),
-	.HBlank(core_hb),
-	.VBlank(core_vb),
-	.HSync(core_hs),
-	.VSync(core_vs),
+	.RGB_in(crt_on ? {crt_r, crt_g, crt_b} : {core_r, core_g, core_b}),
+	.HBlank(crt_on ? crt_hb : core_hb),
+	.VBlank(crt_on ? crt_vb : core_vb),
+	.HSync(crt_on ? crt_hs : core_hs),
+	.VSync(crt_on ? crt_vs : core_vs),
 
 	.CLK_VIDEO(CLK_VIDEO),
 	.CE_PIXEL(CE_PIXEL),
@@ -476,11 +570,54 @@ video_freak video_freak
 	.VIDEO_ARY(VIDEO_ARY),
 
 	.VGA_DE_IN(vga_de_raw),
-	.ARX((!ar) ? 12'd4 : (ar - 1'd1)),
-	.ARY((!ar) ? 12'd3 : 12'd0),
-	.CROP_SIZE(12'd0),
-	.CROP_OFF(5'd0),
+	.ARX((!ar) ? base_arx : (ar - 1'd1)),
+	.ARY((!ar) ? base_ary : 12'd0),
+	.CROP_SIZE(status[70:69] == 2'd1 ? 12'd216 : status[70:69] == 2'd2 ? 12'd224 : 12'd0),
+	.CROP_OFF(status[75:71]),
 	.SCALE(status[68:66])
+);
+
+// HDMI rotation: screen_rotate_two writes the output into DDR3 for the HPS framebuffer; the analog output keeps
+// the native raster. Its flip is not used: Flip Screen goes through eo_video. While the fast load copies, the
+// copy has DDR3 and the rotator sees it busy (it has no reset and counts a write as taken whenever BUSY is low:
+// Arcade-Vamphalf_MiSTer, from Arcade-Seta_MiSTer).
+wire        rot_DDRAM_CLK, rot_DDRAM_WE, rot_DDRAM_RD;
+wire [7:0]  rot_DDRAM_BURSTCNT, rot_DDRAM_BE;
+wire [28:0] rot_DDRAM_ADDR;
+wire [63:0] rot_DDRAM_DIN;
+assign DDRAM_CLK      = ldr_active ? clk_sys            : rot_DDRAM_CLK;
+assign DDRAM_BURSTCNT = ldr_active ? ldr_DDRAM_BURSTCNT : rot_DDRAM_BURSTCNT;
+assign DDRAM_ADDR     = ldr_active ? ldr_DDRAM_ADDR     : rot_DDRAM_ADDR;
+assign DDRAM_DIN      = ldr_active ? ldr_DDRAM_DIN      : rot_DDRAM_DIN;
+assign DDRAM_BE       = ldr_active ? ldr_DDRAM_BE       : rot_DDRAM_BE;
+assign DDRAM_WE       = ldr_active ? ldr_DDRAM_WE       : rot_DDRAM_WE;
+assign DDRAM_RD       = ldr_active ? ldr_DDRAM_RD       : rot_DDRAM_RD;
+screen_rotate_two screen_rotate_two
+(
+	.CLK_VIDEO(CLK_VIDEO),
+	.CE_PIXEL(CE_PIXEL),
+	.VGA_R(VGA_R), .VGA_G(VGA_G), .VGA_B(VGA_B),
+	.VGA_HS(VGA_HS), .VGA_VS(VGA_VS), .VGA_DE(VGA_DE),
+
+	.rotate_ccw(rotate_ccw),
+	.no_rotate(~rotate_en),
+	.flip(1'b0),
+	.two_screen(1'b0),
+	.video_rotated(),
+
+	.FB_EN(FB_EN), .FB_FORMAT(FB_FORMAT),
+	.FB_WIDTH(FB_WIDTH), .FB_HEIGHT(FB_HEIGHT),
+	.FB_BASE(FB_BASE), .FB_STRIDE(FB_STRIDE),
+	.FB_VBL(FB_VBL), .FB_LL(FB_LL),
+
+	.DDRAM_CLK(rot_DDRAM_CLK),
+	.DDRAM_BUSY(DDRAM_BUSY | ldr_active),
+	.DDRAM_BURSTCNT(rot_DDRAM_BURSTCNT),
+	.DDRAM_ADDR(rot_DDRAM_ADDR),
+	.DDRAM_DIN(rot_DDRAM_DIN),
+	.DDRAM_BE(rot_DDRAM_BE),
+	.DDRAM_WE(rot_DDRAM_WE),
+	.DDRAM_RD(rot_DDRAM_RD)
 );
 
 endmodule

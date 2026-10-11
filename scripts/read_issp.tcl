@@ -40,6 +40,25 @@ set fields_C {
     {imiss_last      96 111 dec}
     {polls_last     112 127 dec}
 }
+# P: hidctch3's pens (Eolith.sv, the DEBUG_ISSP block): the positions into eo_main, the raw inputs, and the
+# game's reads (counts cleared by F's source bit 0)
+set fields_P {
+    {pen1_x            0   7 dec}
+    {pen1_y            8  14 dec}
+    {pen2_x           15  22 dec}
+    {pen2_y           23  29 dec}
+    {stick_x          30  37 hex}
+    {stick_y          38  45 hex}
+    {joy0_bits        46  53 hex}
+    {mouse_buttons    54  55 hex}
+    {pens             56  56 bit}
+    {pen1_reads       57  72 dec}
+    {trig_in0_reads   73  88 dec}
+    {last_read_x      89  96 dec}
+    {last_read_y      97 103 dec}
+    {b1_presses      104 111 dec}
+    {pen2_reads      112 127 dec}
+}
 # ---------------------------------------------------------------------------
 
 proc bits_to_int {s lo hi} {
@@ -106,6 +125,7 @@ if {$want ne ""} {
 switch -- $inst_id {
     F       { set fields $fields_F }
     C       { set fields $fields_C }
+    P       { set fields $fields_P }
     default {
         puts "instance id '$inst_id' has no field table -- add one before reading it"
         exit 1

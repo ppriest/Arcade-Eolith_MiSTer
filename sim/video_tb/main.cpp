@@ -54,6 +54,13 @@ int main(int argc, char **argv) {
 	auto tick = [&]() { t->clk = 0; t->eval(); t->clk = 1; t->eval(); };
 	t->board = board;
 	t->flip = atoi(arg(argc, argv, "+flip=", "0").c_str());   // +flip=1: the picture turned 180 degrees
+	// +xh=X1,Y1,X2,Y2: the light pens' crosses at those dots (the game's units doubled), both drawn
+	{
+		int x1 = -1, y1 = 0, x2 = 0, y2 = 0;
+		sscanf(arg(argc, argv, "+xh=", "").c_str(), "%d,%d,%d,%d", &x1, &y1, &x2, &y2);
+		t->cross_en = x1 >= 0 ? 3 : 0;
+		t->cx1 = x1 >= 0 ? x1 : 0; t->cy1 = y1; t->cx2 = x2; t->cy2 = y2;
+	}
 	t->ce_pix = 0; t->cpu_vram_cs = 0; t->cpu_pal_cs = 0; t->cpu_we = 0;
 	tick();
 

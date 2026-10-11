@@ -61,6 +61,18 @@ int main(int argc, char **argv) {
 	int coin_f = atoi(arg(argc, argv, "+coin=", "-1").c_str());
 	int start_f = atoi(arg(argc, argv, "+start=", "-1").c_str());
 	int hold = atoi(arg(argc, argv, "+hold=", "6").c_str());
+	// +fire=F1,F2,...: P1's button 1 pressed for +firehold frames (4) from each listed frame (hidctch3's pen trigger)
+	std::vector<int> fire_at;
+	int fire_hold = atoi(arg(argc, argv, "+firehold=", "4").c_str());   // frames each press lasts
+	{
+		std::string fs = arg(argc, argv, "+fire=");
+		for (size_t q = 0; q < fs.size();) {
+			size_t c = fs.find(',', q);
+			fire_at.push_back(atoi(fs.substr(q, c == std::string::npos ? std::string::npos : c - q).c_str()));
+			if (c == std::string::npos) break;
+			q = c + 1;
+		}
+	}
 	int coinrep = atoi(arg(argc, argv, "+coinrep=", "0").c_str());    // repeat every N frames (0: once)
 	int startrep = atoi(arg(argc, argv, "+startrep=", "0").c_str());
 	auto pressed = [&](int k, int at, int rep) {
@@ -69,6 +81,10 @@ int main(int argc, char **argv) {
 	};
 	int verbose = atoi(arg(argc, argv, "+v=", "0").c_str());
 	bool perf = atoi(arg(argc, argv, "+perf=", "0").c_str()) != 0;   // rtl/debug/eo_perf.sv's fields every 60 frames
+	// +penlog=1: every read of a pen port (frame, line, pen, the position read) and each frame with IN0 reads that
+	// see P1's pen button down
+	bool penlog = atoi(arg(argc, argv, "+penlog=", "0").c_str()) != 0;
+	long trig_reads = 0;
 	std::string wavep = arg(argc, argv, "+wave=");
 	FILE *wavef = wavep.empty() ? nullptr : fopen(wavep.c_str(), "w");
 	long pcwin = atol(arg(argc, argv, "+pcwin=", "-1").c_str());   // print 40 retired PCs from this instruction
@@ -95,6 +111,8 @@ int main(int argc, char **argv) {
 	int busmax = atoi(arg(argc, argv, "+busmax=", "4").c_str());
 	// +ramdump=F: work RAM at 0 (SDRAM SD_WRAM, 2 MB, the CPU's byte order) to <out>/ram_f<F>.bin at the end of frame F
 	int ramdump = atoi(arg(argc, argv, "+ramdump=", "-1").c_str());
+	// +eedump=F: the 93C66's 512 bytes (Gradation 2D) to <out>/ee_f<F>.bin at the end of frame F
+	int eedump = atoi(arg(argc, argv, "+eedump=", "-1").c_str());
 	// +ram4=1: the work RAM at 0x40000000 instead (SDRAM SD_WRAM4, the Gradation 2D)
 	const size_t ram_base = atoi(arg(argc, argv, "+ram4=", "0").c_str()) ? 0x2600000 : 0x2400000;
 	// +wlog=<file>: every CPU write as "W <instr> <addr> <be> <data>", for comparing a stretch with MAME's bus
@@ -153,6 +171,8 @@ int main(int argc, char **argv) {
 
 	top->clk = 0; top->rst = 1; top->prst = 1; top->pause = 0;
 	top->board = atoi(arg(argc, argv, "+board=", "0").c_str());   // 0 Vega, 1 Gradation 2D, 2 eolith16
+	top->ws_mem3 = atoi(arg(argc, argv, "+ws3=", "0").c_str());   // memory wait states: clocks per MEM3 access
+	top->ws_mem = atoi(arg(argc, argv, "+ws=", "0").c_str());     // and per MEM0-2 access (rtl/eo_busws.sv)
 	top->p1p2 = 0xffff; top->system = 0x3f; top->snd_dl_we = 0;
 	top->dsw = strtoul(arg(argc, argv, "+dsw=", "ff").c_str(), nullptr, 16);   // DSW1, as MAME's port
 	// +pens=X,Y: hidctch3's light pens on (the mod byte's bit 2), pen 1 at X (0-159), Y (0-119)
@@ -160,6 +180,10 @@ int main(int argc, char **argv) {
 		int px = -1, py = 0;
 		sscanf(arg(argc, argv, "+pens=", "").c_str(), "%d,%d", &px, &py);
 		top->pens = px >= 0; top->pen1_x = px >= 0 ? px : 0; top->pen1_y = py;
+		// +pens2=X,Y: pen 2's position (default 0, 0, as MAME's port with no second gun)
+		int qx = 0, qy = 0;
+		sscanf(arg(argc, argv, "+pens2=", "").c_str(), "%d,%d", &qx, &qy);
+		top->pen2_x = qx; top->pen2_y = qy;
 	}
 	auto tick = [&]() { top->clk = 0; top->eval(); top->clk = 1; top->eval(); };
 	for (int i = 0; i < 8; i++) tick();           // the PLL locks: the memory side's power-up reset
@@ -190,6 +214,9 @@ int main(int argc, char **argv) {
 		if (pressed(fr1, coin_f, coinrep)) sys &= ~0x01;
 		if (pressed(fr1, start_f, startrep)) sys &= ~0x04;
 		top->system = sys;
+		bool fire = false;
+		for (int f : fire_at) fire |= fr1 >= f && fr1 < f + fire_hold;
+		top->p1p2 = fire ? 0xffef : 0xffff;
 		tick();
 		clocks++; frame_clk++;
 		if (wlog) {
@@ -229,6 +256,12 @@ int main(int argc, char **argv) {
 			if (top->snd_latch_wr) fprintf(wavef, "L %d %02x\n", frame + 1, top->snd_latch);
 			if (top->snd_wave_wr) fprintf(wavef, "W %d %02x %02x\n", frame + 1, top->snd_wave_off, top->snd_wave_data);
 		}
+		if (penlog) {
+			if (top->dbg_pen_rd)
+				printf("penread frame %d pen %d x %d y %d\n", frame + 1, (top->dbg_pen_rd & 1) ? 1 : 2,
+				       (top->dbg_pen_rd & 1) ? (int)top->pen1_x : 0, (top->dbg_pen_rd & 1) ? (int)top->pen1_y : 0);
+			if (top->dbg_trig_rd) trig_reads++;
+		}
 		if (top->retire) {
 			if (pcwin >= 0 && (long)ninstr >= pcwin && (long)ninstr < pcwin + 40)
 				printf("  %8llu %08x%s\n", (unsigned long long)ninstr, top->retire_pc,
@@ -258,6 +291,7 @@ int main(int argc, char **argv) {
 			}
 			if (!prev_vb && top->vblank) {             // the frame ends
 				frame++;
+				if (penlog && trig_reads) { printf("trig frame %d in0_reads_down %ld\n", frame, trig_reads); trig_reads = 0; }
 				// 320 x 240 shown, 320 x 200 on eolith16
 				if (snapping && !pix.empty() && pix.size() % (320 * 3) == 0) {
 					char p[512];
@@ -277,6 +311,13 @@ int main(int argc, char **argv) {
 					FILE *o = fopen(p, "wb");
 					for (size_t a = 0; a < 0x200000; a++)
 						fputc((mem[(ram_base + a) >> 1] >> (8 * (a & 1))) & 0xff, o);
+					fclose(o);
+				}
+				if (frame == eedump) {
+					char p[512];
+					snprintf(p, sizeof p, "%s/ee_f%d.bin", outd.c_str(), frame);
+					FILE *o = fopen(p, "wb");
+					for (int a = 0; a < 512; a++) fputc(top->rootp->tb_sys__DOT__u_main__DOT__u_e9__DOT__mem[a], o);
 					fclose(o);
 				}
 				if (perf && frame % 60 == 0) print_perf(top);

@@ -23,7 +23,9 @@ every frame.
 | 93C66 pins and FSM | `eo_main.sv` `e9_cs/sk/di`; `eo_eeprom93cxx.sv` `st`, `cmd`, `nbits`, `shreg`, `addr`, `locked`, `wall`, `busy`, the sweep | ~70 | yes | eeprom_serial_base_device's save_items |
 | AT28C16 write cycle | `eo_main.sv` `ee_cnt`, `ee_last` | 14 + 8 | yes | at28c16 |
 | IN0 random bits | `eo_main.sv` `rnd` | 16 | no: MAME's are machine().rand() | - |
+| Light pens (hidctch3) | `eo_pens.sv` `px`, `py`, `held` per player | 2 x (8 + 7 + 4) | yes | the PEN_X/PEN_Y ports' values |
 | M6295 (eolith16) | `eo_oki.sv`: jt6295's channel state, the bridge's held byte, the granule cache (refetchable), `acc` | ~600 | yes, but the cache | okim6295 save_items |
+| QS1000 board | `eo_qs1000.sv`: the 8052 (`jt8052`), its RAMs, the latch; `vh_qs1000_voice.sv`: `st_mem` (209 x 32: address, pitch accumulator, ADPCM state, loop start, the ADPCM state saved there, fade level), `lv/rv/vv_mem`, `rel_v`, `env_ctr`, the event queue (drain it), the sample lines (refetchable) | ~7,000 + RAMs | yes, but the queue and lines | qs1000 save_items (Arcade-Vamphalf_MiSTer `docs/STATE.md` lists each) |
 | Sound CPU (Gradation 2D) | `eo_sndcpu.sv`: `jt8052` (its registers, SFRs and timer 2), `u_iram` 256 B, `latch`, `pending`, `bank`, the line buffer, `cacc`, `debt`, `tx_lo`/`tx_up` | ~2,300 + 256 B | yes; the line buffer may be refetched | i8032 save_items, `m_sndbank`, `m_sound_txd`, the latch |
 
 ## Chip state

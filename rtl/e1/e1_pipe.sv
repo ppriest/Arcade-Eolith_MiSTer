@@ -139,7 +139,7 @@ reg        frm_req, frm_fin, ret_pend, frm_body;
 reg [1:0]  frm_kind;
 reg [5:0]  frm_tn;
 // Registers, never RAM: one clock can push several entries (five for the FP trap). A ring: X pushes and the
-// queue commits in the same clocks, so it need never be empty. [EO] Its positions are not reset to 0 when it
+// queue commits in the same clocks, so it need never be empty. Its positions are not reset to 0 when it
 // empties, so where X pushes does not depend on what commits in the same clock.
 (* ramstyle = "logic" *) reg        wq_g [0:7];
 (* ramstyle = "logic" *) reg        wq_raw [0:7];
@@ -148,7 +148,7 @@ reg [5:0]  frm_tn;
 reg [2:0]  wq_cnt, wq_rd;   // write and read positions
 reg [2:0]  t3;
 reg        wq_busy0, did_commit;
-// [EO] the queue head at the start of the clock: a local commits from it at the start of the clock (commit_loc),
+// the queue head at the start of the clock: a local commits from it at the start of the clock (commit_loc),
 // a global at the end (commit_glob)
 reg        hd_valid, hd_raw;
 reg [5:0]  hd_i;
@@ -184,7 +184,7 @@ reg        x_wloc, x_wglob; // it writes L[op[7:4] + FP] / G[op[7:4]]
 reg        x_srw;           // it has queued a write to SR: it retires with the PC and SR after that write
 reg        m_lS, m_lS1, m_lD, m_lD1, m_gS, m_gS1, m_gD, m_gD1, m_gM, m_gMD;   // D's operand is X's write
 reg [31:0] fw_n, fwa_n;     // the values X's instruction queued in this clock: the last, the one before
-reg [31:0] fl_v;            // [EO] a load's last access: the value read
+reg [31:0] fl_v;            // a load's last access: the value read
 reg [31:0] x_seq;           // instructions gone into X, for the benches
 reg [5:0]  x_didx;
 reg        x_mw_last;       // X is in the last clock of a load or store that writes at most one register
@@ -390,12 +390,12 @@ task write_raw(input g, input [5:0] i, input [31:0] v);
 	end
 endtask
 
-// [EO] the instruction's one write of res, as write_dst (raw 0) or write_raw (raw 1), made by w1_push
+// the instruction's one write of res, as write_dst (raw 0) or write_raw (raw 1), made by w1_push
 task w_res(input g, input raw, input [5:0] i);
 	begin w1 = 1'b1; w1_g = g; w1_raw = raw; w1_i = i; end
 endtask
 
-// [EO] write_dst / write_raw of res, as wq_push but at the queue position of the start of the clock: no other
+// write_dst / write_raw of res, as wq_push but at the queue position of the start of the clock: no other
 // push comes before it in a clock w1 is set
 task w1_push;
 	begin
@@ -426,7 +426,7 @@ endtask
 // queue head, local register: written into the register file at the start of the cycle
 task commit_loc;
 	begin
-		if (wq_busy0 && !q_hg) begin   // [EO]
+		if (wq_busy0 && !q_hg) begin
 			l_we_n = 1'b1; l_wa_n = hd_i; l_wd_n = hd_v;
 			wq_rd = wq_rd + 3'd1;
 			did_commit = 1'b1;
@@ -439,7 +439,7 @@ endtask
 // of that cycle never sees it and the SR, timer and trap-entry updates stay off its paths
 task commit_glob;
 	begin
-		if (hd_valid) begin   // [EO] never in a clock commit_loc commits
+		if (hd_valid) begin   // never in a clock commit_loc commits
 			if (hd_raw) G[hd_i[4:0]] = hd_v;   // raw writes never target PC or SR
 			else apply_global(hd_i[4:0], hd_v);
 			wq_rd = wq_rd + 3'd1;
@@ -823,7 +823,7 @@ reg signed [8:0] dsel;
 reg [7:0]  func_hi;
 reg        e_ok;
 reg        nodcp;
-// [EO] the one register write of an ALU, move or set instruction (w_res), pushed after the execute code as the
+// the one register write of an ALU, move or set instruction (w_res), pushed after the execute code as the
 // clock's last push (w1_push): its value, the latest to arrive, then passes one level of the queue's and the
 // forwarding's data selects instead of a select for every call site
 reg        w1, w1_g, w1_raw;
@@ -857,14 +857,14 @@ always @(posedge clk) begin
 		redir = 1'b0;
 		st_hit = 1'b0;
 		tt_fin = 1'b0;
-		w1 = 1'b0; wq_cnt0 = wq_cnt; res = 32'd0;   // [EO]
+		w1 = 1'b0; wq_cnt0 = wq_cnt; res = 32'd0;
 		q_pend = wq_cnt - wq_rd;
 		q_hg = wq_g[wq_rd]; q_hi = wq_i[wq_rd][4:0];
 		wq_busy0 = (wq_cnt != wq_rd);
-		// [EO] entries pushed in this cycle are committed from the next one
+		// entries pushed in this cycle are committed from the next one
 		hd_valid = wq_busy0 && q_hg;
 		hd_raw = wq_raw[wq_rd]; hd_i = wq_i[wq_rd]; hd_v = wq_v[wq_rd];
-		// [EO] a PC write waiting, from the start of the clock (a head commit_loc takes is a local, not one)
+		// a PC write waiting, from the start of the clock (a head commit_loc takes is a local, not one)
 		wq_pcw = 1'b0;
 		for (t_i = 0; t_i < 8; t_i = t_i + 1) begin
 			t3 = t_i[2:0] - wq_rd;
@@ -1916,8 +1916,8 @@ nstate = ST_XW;
 
 		default: nstate = ST_RESET;
 		endcase
-		if (w1) w1_push;   // [EO]
-		// [EO] fw_n and fwa_n as R uses them: go_ovl comes only beside a fast instruction's clock (its one write is
+		if (w1) w1_push;
+		// fw_n and fwa_n as R uses them: go_ovl comes only beside a fast instruction's clock (its one write is
 		// w1's, res) or a load's last access (its one or two results), so not every push's value is a source
 		fl_v  = p_io ? bus_rdata : lane_ext(bus_rdata, bus_addr, p_kind);
 		fwa_n = (p_n == 2'd2) ? p_r0 : fl_v;
@@ -2219,7 +2219,7 @@ task exec_ldst;
 					default: begin
 						if (is_n) begin // STW.S
 							// MAME: when the pointer's own register-file slot is the target, the update adds to the stored value
-							// [EO] The update goes in the queue first, where it lands then not depending on the comparison
+							// The update goes in the queue first, where it lands then not depending on the comparison
 							// with SP, and the store into the register file after it, left out when the slot is the
 							// update's own (MAME stores, then updates: the update's value is the one left).
 							write_raw(ls_dg, ls_didx, ((dl && ls_dreg >= G[18] && ls_dreg[7:2] == didx) ? ls_sreg : ls_dreg) + (extra_s & 32'hfffffffc));
@@ -2260,7 +2260,7 @@ task exec_regind;
 		// MAME: STD.P reads the second source after the pointer update
 		if (is_st && is_pi && is_dbl && sl && sidx1 == didx) ls_sregf = d + 32'd8;
 		if (is_st && is_pi) wq_push(1'b0, 1'b0, didx, d + (is_dbl ? 32'd8 : 32'd4));   // MAME: updated before the store
-		// [EO] the zero pointer's update inside its branch: the write position in the other branch is then decoded
+		// the zero pointer's update inside its branch: the write position in the other branch is then decoded
 		// from the opcode alone
 		if (d == 32'd0) begin
 			if (!is_st && is_pi) wq_push(1'b0, 1'b0, didx, d + (is_dbl ? 32'd8 : 32'd4));

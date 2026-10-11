@@ -11,8 +11,9 @@
     <rotation>horizontal</rotation>
     <buttons names="Button 1,Button 2,-,-,Start,Coin,Pause,Service Coin,Service Mode" default="A,B,Start,Select,L,R" count="2"/>
 
-    <!-- mod byte (Eolith.sv): [1:0] board type, 0 Vega, 1 Gradation 2D, 2 eolith16; [2] light pens -->
-    <rom index="1"><part>01</part></rom>
+    <!-- mod byte (Eolith.sv): [1:0] board type, 0 Vega, 1 Gradation 2D, 2 eolith16; [2] light pens; then the
+         memory wait states, clocks per MEM3 and per MEM0-2 access (rtl/eo_busws.sv) -->
+    <rom index="1"><part>01 00 00</part></rom>
 
     <!-- address: the HPS puts the image in DDR3 and the core copies it to SDRAM (rtl/memory/vh_rom_loader.sv) -->
     <rom index="0" zip="fort2b.zip" md5="none" address="0x30000000">

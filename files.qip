@@ -6,7 +6,12 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/vh_dpram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/eo_dpram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/eo_video.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/eo_eeprom93cxx.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/eo_busws.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/eo_main.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/eo_pens.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/screen_rotate_two.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/crt_adjust.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/eo_crt.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/debug/issp_probe.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/debug/eo_perf.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/mame_keys.sv

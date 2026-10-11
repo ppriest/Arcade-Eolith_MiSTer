@@ -51,7 +51,7 @@ module eo_video #(
 	output reg  [31:0] cpu_rdata,
 
 	// hidctch3's light pens: a cross at each pen's dot (MAME draws the crosshairs in its UI)
-	input  wire        cross_en,
+	input  wire [1:0]  cross_en,      // P2, P1
 	input  wire [8:0]  cx1, cx2,
 	input  wire [7:0]  cy1, cy2,
 
@@ -182,15 +182,22 @@ endfunction
 // ---- output, at the ce_pix that ends the fetch period: the counters still name that dot ----
 reg  [7:0] r_n, g_n, b_n;
 wire       hb = hcnt >= 9'd320;
-// a 7-dot cross, P1 white, P2 yellow
-function xhair(input [8:0] cx, input [7:0] cy);
-	xhair = (vcnt[7:0] == cy && vcnt[8] == 1'b0 && hcnt + 9'd3 >= cx && hcnt <= cx + 9'd3) ||
-	        (hcnt == cx && {1'b0, vcnt[7:0]} + 9'd3 >= {1'b0, cy} && vcnt <= {1'b0, cy} + 9'd3);
+// a 7-dot cross, P1 magenta, P2 cyan, in a black outline a dot wide: {arm, outline}
+function [9:0] adiff(input [8:0] a, input [8:0] b);   // |a - b|
+	adiff = a >= b ? {1'b0, a} - {1'b0, b} : {1'b0, b} - {1'b0, a};
+endfunction
+function [1:0] xhair(input [8:0] cx, input [7:0] cy);
+	reg [9:0] dx, dy;
+	begin
+		dx = adiff(hcnt, cx); dy = adiff(vcnt, {1'b0, cy});
+		xhair[1] = (dy == 10'd0 && dx <= 10'd3) || (dx == 10'd0 && dy <= 10'd3);
+		xhair[0] = (dy <= 10'd1 && dx <= 10'd4) || (dx <= 10'd1 && dy <= 10'd4);
+	end
 endfunction
 // flipped, a pen's dot is shown at (319 - x, 239 - y)
 wire [8:0] fx1 = flip ? 9'd319 - cx1 : cx1, fx2 = flip ? 9'd319 - cx2 : cx2;
 wire [7:0] fy1 = flip ? 8'd239 - cy1 : cy1, fy2 = flip ? 8'd239 - cy2 : cy2;
-wire       c1 = cross_en && xhair(fx1, fy1), c2 = cross_en && xhair(fx2, fy2);
+wire [1:0] c1 = cross_en[0] ? xhair(fx1, fy1) : 2'b00, c2 = cross_en[1] ? xhair(fx2, fy2) : 2'b00;
 wire       vb = vcnt >= (board == 2'd2 ? 9'd200 : 9'd240);
 always @(posedge clk) begin
 	if (ce3) begin
@@ -209,7 +216,8 @@ always @(posedge clk) begin
 		end
 	end
 	if (ce_pix) begin
-		{r, g, b} <= (hb | vb) ? 24'd0 : c1 ? 24'hffffff : c2 ? 24'hffff00 : {r_n, g_n, b_n};
+		{r, g, b} <= (hb | vb) ? 24'd0 : c1[1] ? 24'hff00ff : c2[1] ? 24'h00ffff : (c1[0] | c2[0]) ? 24'd0 :
+		             {r_n, g_n, b_n};
 		hblank <= hb;
 		vblank <= vb;
 		hsync  <= hcnt >= HS_START && hcnt < HS_END;

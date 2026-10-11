@@ -37,6 +37,7 @@ BOARD = {
     "stealsee": dict(VC_MIRROR="eolith", VC_PAL_N="0"),
     "fort2b": dict(VC_MIRROR="eolith", VC_PAL_N="0"),
     "hidctch3": dict(VC_MIRROR="eolith", VC_PAL_N="0"),
+    "raccoon": dict(VC_MIRROR="eolith", VC_PAL_N="0"),
     # eolith16.cpp: m_vram, the memory share "vram" (uint8[0x20000], 34), the CPU's half the entry of
     # "vrambank" (125-129); the fixed palette, none to read
     "klondkp": dict(VC_SHARE=":vram", VC_BANK=":vrambank", VC_PAL_N="0"),
