@@ -81,10 +81,23 @@ def notes_of(writes):
     return notes
 
 
+# IMA ADPCM's step table (89 entries), for the decoder option: ADPCM may be IMA rather than MAME's OKI
+# (docs/QS1000_FEATURES.md, A firmware reading)
+IMA_STEP = [7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88,
+            97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658,
+            724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327, 3660,
+            4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818,
+            18500, 20350, 22385, 24623, 27086, 29794, 32767]
+IMA_INDEX = [-1, -1, -1, -1, 2, 4, 6, 8]
+
+
 class Rom:
-    def __init__(self, rom):
+    """adpcm: "oki" (MAME), "ima-wrap" (16-bit signal wrapping) or "ima-sat" (saturating), each with
+    "-lo" for the low nibble first (MAME reads the high nibble first)."""
+    def __init__(self, rom, adpcm="oki"):
         self.rom = rom
         self.cache = {}
+        self.adpcm = adpcm
 
     def rb(self, a):
         a &= 0xffffff
@@ -108,7 +121,7 @@ class Rom:
             if not adpcm:
                 raw = np.frombuffer(bytes(self.rb(start + i) for i in range(n)), dtype=np.uint8)
                 self.cache[k] = raw.astype(np.int16) - 128
-            else:
+            elif self.adpcm == "oki":
                 sys.path.insert(0, str(VAMPHALF))
                 import qs1000_model as qm
                 dec = qm.Adpcm()
@@ -117,6 +130,26 @@ class Rom:
                     d = self.rb(start + (i >> 1))
                     s = dec.clock((d if i & 1 else d >> 4) & 0xf) >> 4
                     out[i] = ((s + 128) & 0xff) - 128
+                self.cache[k] = out
+            else:
+                # IMA: the 16-bit signal in MAME's int8 units (/ 256), unrounded
+                wrap = self.adpcm.startswith("ima-wrap")
+                lo_first = self.adpcm.endswith("-lo")
+                out = np.empty(n, np.float32)
+                pred, idx = 0, 0
+                for i in range(n):
+                    d = self.rb(start + (i >> 1))
+                    first = (i & 1) == 0
+                    nib = (d & 0xf) if (first == lo_first) else (d >> 4)
+                    step = IMA_STEP[idx]
+                    diff = step >> 3
+                    if nib & 4: diff += step
+                    if nib & 2: diff += step >> 1
+                    if nib & 1: diff += step >> 2
+                    pred = pred - diff if nib & 8 else pred + diff
+                    pred = ((pred + 32768) & 0xffff) - 32768 if wrap else max(-32768, min(32767, pred))
+                    idx = max(0, min(88, idx + IMA_INDEX[nib & 7]))
+                    out[i] = pred / 256.0
                 self.cache[k] = out
         return self.cache[k]
 
@@ -177,8 +210,8 @@ def render(rom, notes, lo, hi, loop="off", release="loopend", velocity="off", ba
         rt = np.array([x[0] for x in n["regs"]])
         ri = np.searchsorted(rt, tk, side="right") - 1
         rr = np.array([x[1] for x in n["regs"]])[ri]
-        gl = rr[:, 6] * rr[:, 8]
-        gr = rr[:, 7] * rr[:, 8]
+        gl = rr[:, 7] * rr[:, 8]          # [207] left, [206] right (docs/QS1000_FEATURES.md, Register map)
+        gr = rr[:, 6] * rr[:, 8]
         if velocity == "linear":
             vel = rr[:, 0xd] / 127.0
             gl = gl * vel

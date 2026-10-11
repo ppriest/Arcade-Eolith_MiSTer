@@ -10,6 +10,9 @@ module tb_snd (
 	input      [7:0]  dl_data,
 	input             latch_wr,
 	input      [7:0]  latch_d,
+	input             ext_rx,           // the QS1000's RxD from rxd_ext (main.cpp's +midi), not the sound CPU
+	input             rxd_ext,
+	input             pcb,              // bal_pcb and loop_pcb, as Eolith.sv has them (main.cpp's +pcb, 1)
 	output            wave_wr,
 	output     [4:0]  wave_off,
 	output     [7:0]  wave_data,
@@ -30,7 +33,10 @@ module tb_snd (
 	output     [15:0] sxrd_addr,
 	output     [7:0]  sxrd_data,
 	output     [15:0] sxmiss,
-	output            txd_o             // the sound CPU's TxD (the QS1000's RxD)
+	output            txd_o,            // the sound CPU's TxD (the QS1000's RxD)
+	output            tick_o,           // 750 kHz; out_l/out_r change every 16th
+	output signed [15:0] out_l,
+	output signed [15:0] out_r
 );
 wire        grad = board == 2'd1;
 wire [26:1] s0_addr, s1_addr, q1_addr, c1_addr;
@@ -42,11 +48,11 @@ assign s1_addr = grad ? c1_addr : q1_addr;
 assign s1_req  = grad ? c1_req : q1_req;
 eo_qs1000 u_snd (
 	.clk(clk), .rst(rst), .dl_we(dl_we && !dl_addr[15]), .dl_addr(dl_addr[14:0]), .dl_data(dl_data),
-	.latch_wr(latch_wr && !grad), .latch_d(latch_d), .bal_pcb(1'b0), .loop_pcb(1'b0), .grad(grad), .rxd(txd),
+	.latch_wr(latch_wr && !grad), .latch_d(latch_d), .bal_pcb(pcb), .loop_pcb(pcb), .grad(grad), .rxd(ext_rx ? rxd_ext : txd),
 	.smp_addr(s0_addr), .smp_req(s0_req), .smp_ack(s0_ack), .smp_dout(m_dout), .smp_doutb(m_doutb),
 	.dat_addr(q1_addr), .dat_req(q1_req), .dat_ack(s1_ack), .dat_dout(m_dout), .dat_doutb(m_doutb),
-	.out_l(), .out_r(), .dbg_drops(drops), .dbg_stalls(stalls), .dbg_xmiss(xmiss),
-	.wave_wr_o(wave_wr), .wave_off_o(wave_off), .wave_data_o(wave_data), .tick_o(),
+	.out_l(out_l), .out_r(out_r), .dbg_drops(drops), .dbg_stalls(stalls), .dbg_xmiss(xmiss),
+	.wave_wr_o(wave_wr), .wave_off_o(wave_off), .wave_data_o(wave_data), .tick_o(tick_o),
 	.dbg_debtmax(debtmax), .dbg_stallclk(stallclk), .dbg_cens(cens), .dbg_noms(noms),
 	.pending_o(pending), .p3we_o(p3we), .p3_o(p3),
 	.xrd_o(xrd), .xrd_addr_o(xrd_addr), .xrd_data_o(xrd_data)

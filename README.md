@@ -30,6 +30,16 @@ quick test of a number of the other sets ran them all.**
 
 ## History
 
+* **20261011** (`releases/Arcade-Eolith_20261011.rbf`, commit `82f4991`, fitter seed 1)
+  * QS1000 sound closer to the chip than MAME, from a Hidden Catch PCB recording, a Mission Craft PCB
+    recording and General MIDI files recorded on a QS1000 (`docs/QS1000_FEATURES.md`): held notes loop and
+    fade at key-off, ADPCM decoded as IMA, [207] the left volume, pitch bend
+  * Raccoon World (MACHINE_NOT_WORKING in MAME): 23 sets
+  * Light pens: d-pad stepping, stick modes, mouse; Hidden Catch 3's EEPROM defaults (English, pen offsets
+    zero) in its `.mra`
+  * CRT Adjust (H-Size, H-Position, V-Shift), Crop and Crop offset; the HDMI scaler's options hidden under
+    direct video
+
 * **20261010** (`releases/Arcade-Eolith_20261010.rbf`, commit `3f882db`, fitter seed 2)
   * **Alpha release** : 22 sets on the Vega, Gradation 2D and `eolith16` boards
   * Crazy War, Hidden Catch and Hidden Catch 3 played on the board; a quick test of a number of the
@@ -172,9 +182,11 @@ Known issues:
   Raccoon World, Steal See.
 * The video timing is inferred, not measured (Video timing).
 * The core's speed against the original boards has not been measured on hardware.
-* Sound has not been compared with MAME by ear on the board. The QS1000 loops held notes and fades them at
-  key-off, as a PCB recording of Mission Craft does; MAME stops them at the sample's end. The fade has one
-  rate for every instrument (`docs/QS1000_FEATURES.md`).
+* Sound has not been compared with MAME by ear on the board. Where the QS1000 differs from MAME it follows
+  recordings (`docs/QS1000_FEATURES.md`): it loops held notes and fades them at key-off (MAME stops them at
+  the sample's end), with one fade rate for every instrument; decodes ADPCM as IMA; has [207] as the left
+  volume; and bends pitch from [204], linearly in the rate (about 12 cents a step up, 7 down), from a Hidden
+  Catch PCB recording and General MIDI recordings on a QS1000.
 * The M6295's output (KlonDike+) has not been compared with MAME; nor have Hidden Catch 3's pens, which
   work on the board.
 
@@ -218,19 +230,19 @@ progress; `docs/LESSONS_LEARNED.md` is what it cost.
 
 ### Resource usage
 
-The release revision (`Eolith`, commit `3f882db`, seed 2) on the DE10-nano's Cyclone V 5CSEBA6, speed
-grade 7, every clock meeting timing (clk_sys +0.867 ns, hdmi pll +0.328 ns; the lowest hold slack
-+0.242 ns):
+The release revision (`Eolith`, commit `82f4991`, seed 1) on the DE10-nano's Cyclone V 5CSEBA6, speed
+grade 7, every clock meeting timing (clk_sys +0.870 ns, hdmi pll +0.272 ns; the lowest hold slack
++0.248 ns):
 
 | resource | used | available |
 | --- | --- | --- |
-| Logic (ALMs) | 30,445 | 41,910 |
-| Block memory bits | 3,703,199 | 5,662,720 |
-| RAM blocks | 439 | 553 |
-| DSP blocks | 46 | 112 |
+| Logic (ALMs) | 31,933 | 41,910 |
+| Block memory bits | 3,730,527 | 5,662,720 |
+| RAM blocks | 446 | 553 |
+| DSP blocks | 50 | 112 |
 | PLLs | 3 | 6 |
 
-RAM blocks (79%) are the resource to watch; the frame buffers take 240 of them.
+RAM blocks (81%) are the resource to watch; the frame buffers take 240 of them.
 
 ## AI Attestation
 

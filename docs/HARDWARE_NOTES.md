@@ -48,7 +48,7 @@ more than 32 MB and the core needs a 64 MB module.
 | `maincpu` | Hyperstone E1-32N (MAME `E132`: 32-bit bus, 4 KB IRAM at 0xc0000000, `e132xs.cpp:116-118, 269-270`) | 45 / 50 / 44.9 MHz (692, 740, 746) | everything: game logic and all drawing, in software | `Arcade-Vamphalf_MiSTer/rtl/e1/e1_cpu.sv`, written from MAME's interpreter; matches MAME on 8,000,000 E1-32 instructions of `wivernwg`; timer interrupt unverified (its `docs/HACKS.md`) |
 | `soundcpu` | 80C301 / GMS90C32 (i8032); AT89C52 on protected sets | 12 MHz (697) | reads the sound latch, sends commands to the QS1000 over the UART | `Arcade-Vamphalf_MiSTer/rtl/qs1000/jt8052` (jt8051 with 256-byte RAM, bit-op fix and a UART); UART unverified there |
 | `qs1000:cpu` | 8052 inside the QS1000 | 24 MHz (728) | wavetable firmware, external program ROM (`set_external_rom`) | same `jt8052`: 3,000,000 instructions of Vamphalf's QS1000 firmware with 0 mismatches |
-| `qs1000` | QDSP QS1000, 32 voices | 24 MHz; stream at clock / 32 = 750 kHz (`qs1000.cpp:233`) | stereo sample playback | none; not yet written in Vamphalf either |
+| `qs1000` | QDSP QS1000 (HWA Sound Source), 32 voices; its 8052 takes MIDI at 31.25 kbps on RXD (HWA datasheet) | 24 MHz; stream at clock / 32 = 750 kHz (`qs1000.cpp:233`); datasheet: 48 MHz master clock mode from a 24 MHz crystal | stereo sample playback; filter, LFO and envelope hardware MAME leaves out | Arcade-Vamphalf_MiSTer's `vh_qs1000_voice.sv`: MAME's model with IMA ADPCM, looping and a key-off fade (`docs/QS1000_FEATURES.md`, Register map) |
 | `eeprom` | 93C66, 8-bit organisation, 512 B (704-706) | | settings, high scores | jotego `jt9346` (`AW=9, DW=8`), GPL-3.0-or-later, jtcores `5e665515d` |
 | `soundlatch` | 8-bit latch, data pending -> sound CPU INT0 (726) | | main -> sound | trivial |
 | EV0514-001 | Eolith custom (PCB notes 805) | 14.31818 MHz crystal beside it (785) | video timing and VRAM | none; MAME models only its effect |
@@ -173,7 +173,7 @@ it with free memory access. Everything except CPU throughput has a plan from par
 | ROM, 34.5 MB worst | 64 MB SDRAM module (user decision); DDR3 at load time only |
 | VRAM, 2 x 256 KB | Lines 0-239 of both buffers in M10K: 2 x 80,640 halfwords x 15 bits = 240 blocks (43%) at 2K x 5. Lines 240-389 (rarely read, `candy` only) in SDRAM behind a write buffer. All of it in M10K would be 384 blocks (69%) |
 | Video out | Scan-out of a frame buffer: no sprite or tile engine. The rule "frame buffer only with driver evidence" is met: the board has one (VRAM, `systemcontrol_w` bit 7) |
-| Sound | jt8052 twice (sound CPU, QS1000 CPU), its UART to verify, QS1000 voice engine to write from MAME (shared with Vamphalf's Phase 3) |
+| Sound | jt8052 twice (sound CPU, QS1000 CPU) and Vamphalf's QS1000 voice engine (`docs/QS1000_FEATURES.md`) |
 | EEPROM | jt9346 |
 | CPU function | Vamphalf's `e1_cpu.sv`; matches MAME on 2,000,000 instructions of the `crazywar` boot; no interrupts are used |
 | **CPU throughput** | **The blocking unknown, below** |

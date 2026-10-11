@@ -45,8 +45,10 @@ Steps for a release:
    two builds of one commit at different seeds have differed in which games ran.
 7. Update `README.md`: History, Supported table, Status, Resource usage.
 
-**Current state:** `20261010` released: `3f882db`, seed 2, every clock meeting timing (clk_sys +0.867 ns);
-the parent sets' smoketest was a quick test by the user, not a sweep script (none ported yet).
+**Current state:** `20261011` released: `82f4991`, seed 1, every clock meeting timing (clk_sys +0.870 ns,
+hdmi pll +0.272 ns); on the board, Hidden Catch launched to its attract screen (`debug/hw/hidnctch_release.png`)
+before the user published it; no sweep script (none ported yet), so the other parent sets were not
+smoke-tested on this build.
 
 ## Submitting the core upstream
 

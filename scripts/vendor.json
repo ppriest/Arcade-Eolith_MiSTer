@@ -148,7 +148,7 @@
     {
       "path": "rtl/qs1000/PROVENANCE.md",
       "source": "vamphalf",
-      "commit": "c7ffb62e47579337e6c7f031dca817f7808ef4ac",
+      "commit": "775c0ae43d023896357e7dd56043efe9ce47670f",
       "mode": "copy"
     },
     {
@@ -208,7 +208,7 @@
     {
       "path": "rtl/qs1000/jt8052/jt8052.v",
       "source": "vamphalf",
-      "commit": "c7ffb62e47579337e6c7f031dca817f7808ef4ac",
+      "commit": "775c0ae43d023896357e7dd56043efe9ce47670f",
       "mode": "copy"
     },
     {
@@ -256,7 +256,7 @@
     {
       "path": "rtl/qs1000/vh_qs1000_voice.sv",
       "source": "vamphalf",
-      "commit": "e2c2e2768306e98a5f2a649fc4399184d39bb242",
+      "commit": "d4f724ba59ce4ed0857f4cfc1506d4a95795bf1e",
       "mode": "copy"
     },
     {
