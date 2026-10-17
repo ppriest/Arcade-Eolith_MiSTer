@@ -15,6 +15,7 @@ quick test of a number of the other sets ran them all.**
   - [Out of scope for now](#out-of-scope-for-now)
 - [Hardware](#hardware)
   - [Video timing](#video-timing)
+  - [Floorplan](#floorplan)
 - [Screenshots](#screenshots)
 - [Installation](#installation)
 - [Controls](#controls)
@@ -117,6 +118,14 @@ Visible 320 x 240 (`eolith16`: 320 x 200). MAME gives no video timing (`set_refr
 `set_size(512, 262)` are placeholders, `eolith.cpp:714-717`); the dot clock is half the boards'
 14.31818 MHz crystal by inference, and the totals are chosen (`docs/HACKS.md`). A board's notes in
 the driver give 15.64 kHz and 60 Hz measured.
+
+### Floorplan
+
+Where the logic sits on the Cyclone V, read from the compiled design with `scripts/floorplan.py` (blocks defined in `scripts/floorplan.json`). One cell per LAB, M10K or DSP site, coloured by the block owning most of it, brighter when fuller. The thin columns are M10K and DSP; the empty area at the top right is the HPS; grey is the MiSTer framework. LUT counts are combinational cells, two per ALM.
+
+Revision `Eolith`, fitted 11 Oct 2026:
+
+![Floorplan of Eolith](docs/floorplan/Eolith.png)
 
 ## Screenshots
 
