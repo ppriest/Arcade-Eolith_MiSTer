@@ -89,28 +89,22 @@ PATCHES = {
 # per game (parent): the panel's button names, from the game where it shows them
 BUTTONS = {
     # four slots, "-" unused: mame_keys puts keys on buttons 3-4, so Start and Coin sit at bits 8-9
-    "crazywar": ["Shot", "Button 2", "-", "-"],   # "SHOT": the tutorial (debug capture f1545); button 2 not seen named
-    # the how-to-play screens show only "A": the joystick moves the marker, A marks the spot (attract
-    # capture debug/hidnctch-attract f1600); MAME's button 2 is not shown
+    "crazywar": ["Shot", "Button 2", "-", "-"],
     "hidnctch": ["Mark", "-", "-", "-"],
-    # the game shows no name; in the demo the hand cursor picks a card up and puts it down
-    # (debug/klondkp-attract)
     "klondkp": ["Pick", "-", "-", "-"],
-    # the Hidden Catch games share hidnctch's controls (MAME: the same ports, hidctch2 adds nothing)
     "hidctch2": ["Mark", "-", "-", "-"],
     "hidnc2k": ["Mark", "-", "-", "-"],
     "nhidctch": ["Mark", "-", "-", "-"],
-    "hidctch3": ["Pen", "-", "-", "-"],   # the light pen's button (MAME: BUTTON1 on IN0 23:16); the pen is the left stick
-    # not seen named yet: MAME's buttons
-    "linkypip": ["Button 1", "Button 2", "Button 3", "-"],
-    "ironfort": ["Button 1", "Button 2", "-", "-"],
-    "puzzlekg": ["Button 1", "Button 2", "-", "-"],
-    "candy": ["Button 1", "Button 2", "-", "-"],
-    "landbrk": ["Button 1", "Button 2", "-", "-"],
-    "penfan": ["Button 1", "Button 2", "-", "-"],
-    "stealsee": ["Button 1", "Button 2", "-", "-"],
-    "fort2b": ["Button 1", "Button 2", "-", "-"],
-    "raccoon": ["Button 1", "Button 2", "-", "-"],
+    "hidctch3": ["Mark", "-", "-", "-"],   # the light pen's button (MAME: BUTTON1 on IN0 23:16); the pen is the left stick
+    "linkypip": ["Rotate All", "Rotate First", "Rotate Second", "-"],
+    "ironfort": ["Fire", "-", "-", "-"],
+    "puzzlekg": ["Rotate CW", "Rotate CCW", "Hard Drop", "-"],
+    "candy": ["Shoot", "Utility", "-", "-"],
+    "landbrk": ["Draw", "Utility", "-", "-"],
+    "penfan": ["Grab / Drop", "Rotate", "-", "-"],
+    "stealsee": ["Draw", "Utility", "-", "-"],
+    "fort2b": ["Fire", "Item", "-", "-"],
+    "raccoon": ["Throw", "Jump", "-", "-"],
 }
 CATEGORY = {"crazywar": "Shooter", "hidnctch": "Puzzle", "klondkp": "Card", "hidctch2": "Puzzle", "hidnc2k": "Puzzle",
             "nhidctch": "Puzzle", "linkypip": "Puzzle", "ironfort": "Shooter", "puzzlekg": "Puzzle", "candy": "Puzzle",

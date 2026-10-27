@@ -3,15 +3,11 @@
 A MiSTer FPGA core for Eolith's Hyperstone arcade boards (MAME's `vegaeo.cpp`, `eolith.cpp` and
 `eolith16.cpp`), built with Quartus Prime 17.0.2 Lite for the DE10-nano.
 
-**Status: 23 sets on three boards. Crazy War, Hidden Catch and Hidden Catch 3 play on the board; a
-quick test of a number of the other sets ran them all.**
-
 ## Contents
 
 - [History](#history)
 - [Games](#games)
   - [Supported](#supported)
-  - [Not yet](#not-yet)
   - [Out of scope for now](#out-of-scope-for-now)
 - [Hardware](#hardware)
   - [Video timing](#video-timing)
@@ -20,7 +16,6 @@ quick test of a number of the other sets ran them all.**
 - [Installation](#installation)
 - [Controls](#controls)
 - [Status](#status)
-  - [Features](#features)
   - [Todo](#todo)
   - [Resource usage](#resource-usage)
 - [AI Attestation](#ai-attestation)
@@ -89,10 +84,6 @@ recorded).
 | Fortress 2 Blue Arcade (Korea) (ver 1.00 / pcb ver 3.05) | 2001 | Eolith | `fort2ba` | Gradation 2D | Clone of `fort2b` |
 | KlonDike+ | 1999 | Eolith | `klondkp` | `eolith16` | 320 x 200 picture |
 
-### Not yet
-
-None: every set of the three drivers has an `.mra`.
-
 ### Out of scope for now
 
 | MAME description | Why |
@@ -154,10 +145,7 @@ with a `mister.env` (see `scripts/deploy.py`).
 
 ## Controls
 
-Joystick: Button 1 to Button 4, Start, Coin, Pause, Service Coin, Service Mode. The `.mra` names the
-buttons per game: Crazy War's button 1 is Shot, the Hidden Catch games' Mark, KlonDike+'s Pick.
-
-Hidden Catch 3's light pens, set on the OSD's pen lines (shown only for this set):
+Hidden Catch 3's light pens:
 
 * **D-pad:** moves the player's pen a step a frame, one unit (two dots) for the first 12 frames it is held,
   then three.
@@ -186,9 +174,7 @@ Start 1 / 2, Coin 5 / 6; F2 service switch, 9 / 0 service coins, P pause.
 
 Known issues:
 
-* **Ten sets still show generic button names** ("Button 1", "Button 2"): Candy Candy, Crazy War's
-  button 2, Fortress 2 Blue Arcade, Iron Fortress, Land Breaker, Linky Pipe, Penfan Girls, Puzzle King,
-  Raccoon World, Steal See.
+* Audio is still not 100%, it has more features now but can leave notes hanging due to the looping
 * The video timing is inferred, not measured (Video timing).
 * The core's speed against the original boards has not been measured on hardware.
 * Sound has not been compared with MAME by ear on the board. Where the QS1000 differs from MAME it follows
@@ -203,36 +189,9 @@ Known issues:
 right. `docs/HACKS.md` lists this core's own approximations. `docs/ROADMAP.md` is the plan and its
 progress; `docs/LESSONS_LEARNED.md` is what it cost.
 
-### Features
-
-* DIP switches from the `.mra` (`DIP;` in the OSD): done
-* Inputs: done; MAME's default keyboard mapping
-* CRT Adjust (H-Position, V-Shift, H-Size, V-Size): H-Position, V-Shift and H-Size (`rtl/video/eo_crt.sv`, rmonic79's
-  `crt_adjust.sv`); no V-Size. H-Size widens to the right: a larger picture needs H-Position moved left to fit the
-  line
-* HDMI scaling (integer scale, crop, crop offset): done (crop 216 or 224 of the 240 lines)
-* HDMI rotation (orientation): done (Off, CW, CCW), for a monitor on its side; every set is horizontal
-* Flip screen, HDMI and analog, from the OSD or the DIP (fake DIP where the game has none): done, from
-  the OSD (no board here has a flip); checked in simulation on the three boards against MAME's frame
-  turned 180 degrees (the unflipped scan-out is pixel-identical to MAME's)
-* HDMI-only options hidden under direct video: done
-* Peripheral menus shown only for games that use them: n/a
-* Rotary joysticks (Ikari Warriors controls, GRS keystroke mode), where used: n/a
-* Light guns: mouse, analog stick and synthetic crosshair, where used: done for Hidden Catch 3's pens:
-  d-pad, analog stick (Auto, Aim, D-pad), mouse, a cross per player
-* Audio mix (Mono, None, 25%, 50%): done (None, 25%, 50%, 100%)
-* Hiscore saving (`hiscore.v`, with autosave): not in this core. MAME's `hiscore.dat` covers only Iron Fortress,
-  Candy Candy and Land Breaker, whose scores sit in work RAM behind the CPU's caches
-* NVRAM / EEPROM saved to the `.nvm` file: done
-* Fast ROM loading via DDR: done
-* Pause (with CPU suspended): done
-* Sound: QS1000 (Vega, Gradation 2D) and M6295 (`eolith16`)
-* Savestates (optional): not yet
-* Cheats (optional): not yet
-
 ### Todo
 
-- [ ] The game's own button names for the ten sets above
+- [ ] Crazy War's button 2 name
 - [ ] Sound judged against MAME on the board
 - [ ] Frame times on the board against MAME's (the `Eolith_stp` revision's probes)
 - [ ] The video timing from a board measurement
@@ -259,7 +218,7 @@ This core is being developed with heavy use of a frontier coding assistant.
 
 ## Verification
 
-Not PCB-validated. MAME's `vegaeo.cpp`, `eolith.cpp`, `eolith16.cpp`, `qs1000.cpp` and `e132xs` are the
+Not PCB-validated otehr than the odd PCB video. MAME's `vegaeo.cpp`, `eolith.cpp`, `eolith16.cpp`, `qs1000.cpp` and `e132xs` are the
 reference. Where the core follows MAME on something MAME marks as uncertain, it is listed in
 `docs/MAME_KLUDGES.md`; the core's own approximations are in `docs/HACKS.md`.
 

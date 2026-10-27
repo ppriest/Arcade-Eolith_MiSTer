@@ -350,14 +350,14 @@ First set: `hidnctch` (light in MAME, no protection).
    the `sys_tb` PC comparisons. This core's timing changes went upstream as Vamphalf `8f1f21c` (seed 3 there:
    clk_sys +1.708 ns at 56 MHz, from +0.649 ns); `e1_pipe.sv` is again an unchanged copy.
 5. **Button 2's name.** The tutorial labels button 1 "SHOT"; button 2 has not been seen named.
-6. **Button names** for the `eolith.cpp` sets other than the Hidden Catch games, from manuals or the games'
-   own screens; `validate_mra.py` holds them back until then.
+6. **Button names** for the `eolith.cpp` sets other than the Hidden Catch games: done, the user's names in
+   `build_mra.py` `BUTTONS`.
 
 ## Next steps
 
 1. KlonDike+ and the flip screen on the board (Hidden Catch 3 works there, user report).
 2. Sound judged by ear on the board (Phase 3's exit): Crazy War and Hidden Catch.
-3. The other `eolith.cpp` sets on the board; their button names (Open items 6).
+3. The other `eolith.cpp` sets on the board.
 4. The standard features: done but hiscore, which the user dropped for this core (`hiscore.dat` has only ironfort,
    candy and landbrk, in work RAM behind the CPU's caches). Done: direct-video menu hiding, crop, CRT Adjust
    (`sim/crt_tb`), HDMI rotation, DIPs, Pause, NVRAM, fast load, audio mix, flip.
