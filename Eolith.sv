@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Eolith (MAME eolith/vegaeo.cpp so far): the Hyperstone E1 boards of Eolith; sets in
+// Eolith's Hyperstone E1 boards (MAME eolith/vegaeo.cpp, eolith.cpp, eolith16.cpp); sets in
 // scripts/build_mra.py SETS.
 //
-// Framework glue: hps_io, PLL, resets, the ROM download, inputs, the AT28C16's .nvm, and the video
-// output. The board is rtl/eo_main.sv (CPU, memory, I/O, frame buffer).
+// Framework glue: hps_io, PLL, resets, the ROM download, inputs, the EEPROM's .nvm, the sound boards and
+// the video output. The board is rtl/eo_main.sv (CPU, memory, I/O, frame buffer).
 //
 // Clocks (rtl/pll): clk_sys 57.272727 MHz (630/11, 8x the 7.15909 MHz dot) for everything, SDRAM
 // included; SDRAM_CLK the same lagging by T - 2.98 ns: 73 steps of the 630 MHz VCO (rtl/pll/pll_0002.v).
@@ -146,7 +146,7 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.ioctl_dout(ioctl_dout),
 	.ioctl_wait(ioctl_wait),
 
-	// the .mra's <nvram index="2" size="2048"/>: the AT28C16
+	// the .mra's <nvram index="2">: the AT28C16 (Vega, 2 KB) or the 93C66 (512 bytes)
 	.ioctl_upload(ioctl_upload),
 	.ioctl_upload_req(nvram_save),
 	.ioctl_upload_index(8'd2),
@@ -294,7 +294,7 @@ wire pause_cpu = pause_toggle | status[82];
 
 ///////////////////////   NVRAM   ////////////////////////////////
 
-// The .nvm (index 2) loads the AT28C16 while the core is held; a save is requested a second after the
+// The .nvm (index 2) loads the EEPROM while the core is held; a save is requested a second after the
 // game's last write.
 wire       ee_load_we = ioctl_download && ioctl_wr && ioctl_index == 16'd2;
 wire [7:0] ee_rd_data;

@@ -1,4 +1,5 @@
-// System bench: the Vega board from reset, on the real SDRAM controller and a chip model.
+// System bench: the main board (+board=0 Vega, 1 Gradation 2D, 2 eolith16) from reset, on the real SDRAM
+// controller and a chip model.
 //
 //   run_verilator.sh sys_tb +img=<image.bin> [+frames=N] [+snap=F1,F2,...] [+out=<dir>]
 //                    [+pctrace=<instr.trace>] [+coin=F] [+start=F] [+hold=K] [+v=1]
@@ -7,7 +8,8 @@
 // model's array before the clock starts. +snap lists frames whose 320 x 240 shown dots are written as
 // <out>/f<N>.ppm; a frame ends at the start of vblank, as MAME's frame notifier. +pctrace compares the
 // CPU's retired PCs with a MAME instruction trace (docs/E1_TRACE_FORMAT.md) and reports the first
-// difference (a TRAP retires with the address after it: accepted). +coin / +start press COIN1 / START1 at frame F for +hold frames (default 6).
+// difference (a TRAP retires with the address after it: accepted). +coin / +start press COIN1 / START1 at
+// frame F for +hold frames (default 6).
 // The QS1000 program (the first 32 KB at SD_SNDPRG) goes into the sound board while rst is held.
 // +wave=<file> logs the sound latch writes ("L <frame> <data>") and the wavetable register writes
 // ("W <frame> <off> <data>") in order, for scripts/qs1000_wave_compare.py.

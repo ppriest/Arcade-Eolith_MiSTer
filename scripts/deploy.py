@@ -12,7 +12,8 @@ revision (build/output_files/<rev>.rbf, build/q_staged.log); --rev, --rbf,
 --log and --sta point it elsewhere. The remote name is derived from the
 project (the .qpf stem): <project>_NNNNNNNN.rbf (numbered from 30000001).
 
-Connection settings come from ./mister.env (gitignored):
+Connection settings come from mister.env (gitignored) or ~/.mister-core.env
+(scripts/coretools.py load_env):
 
     MISTER_HOST=...
     MISTER_USER=...
@@ -23,11 +24,9 @@ automation without sshpass.
 
 WHY THE BUILD GUARD IS HERE
 ---------------------------
-A Quartus build died mid-Fitter, Quartus left the PREVIOUS build's .rbf in
-output_files/, the deploy copied that stale bitstream under a new name, and
-the verification screenshot came back healthy -- because it was verifying the
-previous build. A green result against a stale artifact is worse than a red
-one, because it looks like evidence.
+A Quartus build that dies mid-Fitter leaves the previous build's .rbf in
+output_files/; deployed under a new name, it passes a screenshot check that is
+verifying the previous build.
 
 So two independent checks, either of which alone can be fooled:
   1. the build log contains Quartus's success line;
@@ -51,8 +50,7 @@ REMOTE_CORES = "/media/fat/_Arcade/cores"
 SUCCESS = "Full Compilation was successful"
 
 # --- core-specific: edit for this core -------------------------------------
-# The folder the .mra files go to (clones in _alternatives beneath it). The
-# default is the project name; a display name is fine too ("_Konami System GX").
+# The folder the .mra files go to (clones in _alternatives beneath it).
 REMOTE_ARCADE = "/media/fat/_Arcade/_%s" % PROJECT
 # Sets that are built but cannot yet run are held back from the device (name
 # the .mra stems). --all copies them anyway.
@@ -177,8 +175,7 @@ def check_build(rbf, log, sta, allow_timing_miss=False):
 # 30000001, above any dated file (<project>_YYYYMMDD.rbf from a release or another
 # source, which sorts with the numbers and would otherwise win), and is read back
 # from the device, .held files included, so a held build's number is never reused;
-# numbers below the start (the old 10000001 series, dated files) are ignored. A
-# plain <project>.rbf from before this convention is moved aside to .held.
+# numbers below the start are ignored. A plain <project>.rbf is moved aside to .held.
 # ---------------------------------------------------------------------------
 RBF_STEM = PROJECT
 RBF_FIRST = 30000001

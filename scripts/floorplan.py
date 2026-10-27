@@ -91,7 +91,7 @@ SMALL = 600          # LUT+FF below which an automatic group folds into "emu oth
 
 
 def strip_entities(name):
-    """'emu:emu|fuuki_core:u_core|x~3' -> 'emu|u_core|x~3' (instance names only)."""
+    """'emu:emu|eo_main:u_main|x~3' -> 'emu|u_main|x~3' (instance names only)."""
     return "|".join(p.split(":", 1)[-1] for p in name.split("|"))
 
 

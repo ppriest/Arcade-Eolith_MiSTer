@@ -1,6 +1,7 @@
 // The Gradation 2D's sound CPU as eolith.cpp wires it (eolith45 689-735, sound maps 397-412, 261-266,
 // 311-322): an i8032 on 12 MHz that takes the main CPU's sound latch and sends the QS1000 its commands
-// over the UART. The 8052 is Vamphalf's vendored jt8052, unchanged, as in eo_qs1000.
+// over the UART. The 8052 is Vamphalf's vendored jt8052, as in eo_qs1000; its timer 2 ([EO]) is this CPU's
+// 10 ms tick.
 //
 //   program  0x0000-0x7fff  the 32 KB soundcpu ROM, in block RAM; above, 0xff
 //   data     0x0000-0x7fff  reads: sounddata[bank * 0x8000 + addr], bank = the last P1 written, bits 3:0

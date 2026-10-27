@@ -3,15 +3,11 @@
 
 WHY
 ---
-An edit to a comment block once left a `-->` in place that had already closed
-the comment, so the new prose landed in the document as character data. It
-contained a bare `<`, which is illegal in XML, so MiSTer refused the file: the
-DIP switches vanished from the OSD, the ROM never loaded, and the core came
-up on an all-zero image. That looked exactly like a core regression.
-
-Nothing about that failure is visible by reading the diff, and MiSTer's own
-parser is lenient enough that some malformations load fine while others kill
-the file. So check mechanically, every time, before copying an .mra.
+A comment block closed early by a stray `-->` leaves its prose in the document
+as character data; a bare `<` in it is illegal XML, and MiSTer refuses the
+file (no DIPs in the OSD, no ROM, an all-zero image). MiSTer's own parser is
+lenient enough that some malformations load fine while others kill the file,
+so check mechanically, every time, before copying an .mra.
 
 Checks:
   1. The file is well-formed XML (strict -- stricter than MiSTer's parser).

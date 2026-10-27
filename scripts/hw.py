@@ -9,17 +9,16 @@
     python scripts/hw.py osd                             # toggle the OSD (forces an nvram save)
 
 Needs MiSTer Remote (wizzomafizzo/mrext) listening on port 8182, and the same
-./mister.env that scripts/deploy.py uses. The .mra folder is derived from the
+connection settings as scripts/deploy.py. The .mra folder is derived from the
 project name (/media/fat/_Arcade/_<project>); REMOTE_ARCADE_DIR below
 overrides it.
 
-TWO BEHAVIOURS HERE ARE NOT OPTIONAL, each learned from a false positive:
+TWO BEHAVIOURS HERE ARE NOT OPTIONAL:
 
 1. LAUNCH BOUNCES THROUGH menu.rbf FIRST. Launching a .mra while any core is
    already running -- including the very core the .mra targets -- does NOT
-   reprogram the FPGA or reload the ROM; it silently reuses what is loaded.
-   That produced a run where deploy, launch and screenshot all reported
-   success and the screenshot was of an earlier build.
+   reprogram the FPGA or reload the ROM; it silently reuses what is loaded,
+   and the screenshot is of the earlier build.
 
 2. THE SCREENSHOT TRIGGER IS RE-SENT, not just polled for longer. The API call
    returns an empty body and is sometimes simply lost; the signal is a new
@@ -28,7 +27,7 @@ TWO BEHAVIOURS HERE ARE NOT OPTIONAL, each learned from a false positive:
 --native writes "screenshot" to /dev/MiSTer_cmd instead of POSTing to the
 API: the core's output at its native resolution, which is what pixel
 comparison against MAME needs. The API's scaled output is what the framework
-shows and is useless for that.
+shows.
 """
 import argparse
 import re
@@ -124,7 +123,7 @@ class Mister:
     def screenshot(self, out_path, core=None, settle=4, native=False,
                    poll_timeout=15, attempts=4):
         # Settle BEFORE reading /tmp/CORENAME: straight after a launch it
-        # still names the previous core, so the poll watched the wrong folder.
+        # still names the previous core.
         time.sleep(settle)              # let the core actually render a frame
         core = core or self.core_name()
         print(f"  screenshot folder: {REMOTE_SHOTS}/{core}")
@@ -137,8 +136,7 @@ class Mister:
                 if new:
                     name = sorted(new)[-1]
                     # The file appears before the MiSTer has finished writing
-                    # it; fetched straight away it came back a truncated PNG.
-                    # Wait for its size to hold across a second.
+                    # it. Wait for its size to hold across a second.
                     size, stable_for = None, 0
                     while stable_for < 2 and time.time() < deadline + 10:
                         s = self.sh(f"stat -c %s {REMOTE_SHOTS}/{core}/{name}",
@@ -162,9 +160,8 @@ class Mister:
 def resolve_mra(m, name):
     """Find the .mra on the device, so a typo fails here and not silently."""
     # Git Bash rewrites a leading-slash argument into a Windows path before
-    # python sees it ("/media/fat/x" -> "C:/Program Files/Git/media/fat/x"),
-    # which silently launched nothing. Recover the MiSTer path from wherever
-    # the mangling left it.
+    # python sees it ("/media/fat/x" -> "C:/Program Files/Git/media/fat/x").
+    # Recover the MiSTer path from wherever the mangling left it.
     hit = re.search(r"/media/fat/.*", name)
     if hit:
         return hit.group(0)

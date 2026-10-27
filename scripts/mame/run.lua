@@ -1,20 +1,15 @@
 -- Bootstrap that makes Lua failures VISIBLE to the calling script.
 --
--- MAME reports a broken autoboot script with a modal dialog. Headless, that is
--- close to invisible: the process sits on the dialog until something kills it,
--- the capture directory looks untouched, and the only symptom is "it quietly
--- did nothing" -- a syntax error from a stray newline inside a string literal,
--- and a runtime error after an edit deleted a function still being called.
---
--- This wrapper catches both classes and writes them to a file the Python
--- runner reads back, so a Lua fault becomes a printed error instead of a hunt:
+-- MAME reports a broken autoboot script with a modal dialog. Headless, the
+-- process sits on the dialog until something kills it and the capture
+-- directory looks untouched. This wrapper writes the error to a file the
+-- Python runner reads back:
 --
 --   syntax errors    loadfile() returns nil plus a message, BEFORE any of the
 --                    target script runs. pcall cannot catch these, because
 --                    there is nothing to call yet -- it has to be loadfile.
---   runtime errors   pcall around the call, and again around each frame
---                    notifier, since an error inside a notifier is reported by
---                    MAME but does not reach the loader.
+--   runtime errors   pcall around the script's top level only; an error inside
+--                    a notifier or tap does not reach the loader.
 --
 -- Point -autoboot_script at THIS file and pass the real script in CORE_SCRIPT.
 

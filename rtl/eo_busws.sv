@@ -3,8 +3,8 @@
 //
 // The board's E1 has no data cache and runs every access at the timing its BCR sets per area (MAME's
 // update_bus_control decodes it; raccoon writes 0xfa1501c4: MEM0-2 two cycles, MEM3 eleven plus one hold,
-// at 45 MHz). The core's memory answers a cache hit in one clock. The counts are an experiment, set on the
-// OSD (docs/HACKS.md); 0 passes the request straight through.
+// at 45 MHz). The core's memory answers a cache hit in one clock. The counts come from the .mra, or the
+// Debug page when set (docs/HACKS.md); 0 passes the request straight through.
 //
 // The E1's areas: MEM0 0x00000000, MEM1 0x40000000, MEM2 0x80000000, IRAM 0xc0000000, MEM3 0xe0000000; the
 // I/O space is counted as MEM3. The CPU may raise its next request in the clock the last is acked, so an
@@ -37,7 +37,7 @@ always @(posedge clk) begin
 		cnt <= cnt - 6'd1;
 end
 
-// with no wait the request passes in its first clock, as before; otherwise once the count has run out
+// with no wait the request passes in its first clock; otherwise once the count has run out
 assign req_o = req && (busy ? cnt == 6'd0 : ws == 6'd0);
 
 endmodule

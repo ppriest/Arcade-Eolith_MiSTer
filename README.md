@@ -302,7 +302,7 @@ Standard [Template_MiSTer](https://github.com/MiSTer-devel/Template_MiSTer) stru
 | `rtl` | core source; vendored modules carry a `PROVENANCE.md` |
 | `releases` | `.rbf` and `.mra` files; clones in `_alternatives` |
 | `docs` | roadmap, workflow, release process, kludges, hacks, lessons |
-| `sim` | ModelSim and Verilator testbenches |
+| `sim` | Verilator testbenches (`scripts/run_verilator.sh`) |
 | `scripts` | build, deploy, capture and verification tooling |
 | `debug` | reference captures from MAME used as ground truth (gitignored) |
 | `roms` | your own MAME sets (gitignored, never committed) |

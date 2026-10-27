@@ -1,4 +1,4 @@
-// The Vega sound board against MAME, alone: MAME's latch commands in, the voice-register writes out.
+// The sound board against MAME, alone: MAME's latch commands in, the voice-register writes out.
 //
 //   run_verilator.sh snd_tb +img=<image.bin> +mame=<mame_wave.txt> +out=<rtl_wave.txt> [+frames=N]
 //
@@ -6,8 +6,9 @@
 // and the 8052's program (the first 32 KB at SD_SNDPRG) goes in through the board's download port with
 // rst held. +mame is scripts/mame/qs1000_wave.lua's log: each "L <frame> <data> <seconds>" is written to
 // the latch at that time, counted in clocks of 630/11 MHz from the release of rst (MAME's power-on); a line
-// without the time, at the start of that frame (954,545 clocks a MAME frame). The board's latch and register writes go to +out in the
-// same format, for scripts/qs1000_wave_compare.py --no-capture, and its banked data reads ("R <frame> <addr> <data>").
+// without the time, at the start of that frame (954,545 clocks a MAME frame). The board's latch and register
+// writes go to +out in the same format, for scripts/qs1000_wave_compare.py --no-capture, and its banked data
+// reads ("R <frame> <addr> <data>").
 //
 //   run_verilator.sh snd_tb +board=1 +img=<image.bin> +midi=<bytes.txt> +wout=<wave.txt> +secs=S
 //

@@ -30,12 +30,7 @@ Rules:
 | Memory wait states: clocks added to each CPU data access, by E1 memory area (MEM3: ROM and I/O, MEM0-2: RAM and VRAM), from the `.mra` (bytes 1-2 of index 1, `build_mra.py` `WAITS`) or the Debug page when set; raccoon 15 and 2, the other sets 0 | `rtl/eo_busws.sv`, `Eolith.sv` (`ws3_mra`, `ws3_of`) | The board's E1 has no data cache and runs each access at the timing its BCR sets; the core's cache answers in a clock. raccoon's BCR (0xfa1501c4: MEM0-2 2 cycles, MEM3 11 + 1 hold, at 45 MHz) scaled to 57.27 MHz gives 15 and 2; the other sets' BCRs (MEM3 8 + 1, RAM 2) are not applied. Instruction fetches are not delayed | Every set's waits from its BCR and CPU clock, the instruction side too, checked against measured frame rates (PCB footage) | raccoon at 15 and 2: about the right speed on the board (the user); at 0, several times too fast. sys_tb: its loop from 1 frame to 3 | visible |
 | Hidden Catch 3's `.mra` carries a default EEPROM, language English | `scripts/build_mra.py` `EEPROM_DEFAULT` (sent as `<rom index="2">` before `<nvram>`) | A board or MAME starts from a blank 93C66 and the game writes its own defaults, language Korea; ours is that default with byte 0x06 = 1 (English), the counters and the pens' offsets written as zero | Nothing to fix while English is wanted; a blank start is the hardware's | MAME from blank: `cb 06 03 02 00 01 00 00` at 0x00 (debug/hc3cal); the board's save after MAIN SETUP's English: 0x06 = `01` | visible |
 
-<!-- Examples of the shape, from sibling cores:
-| Sound mailbox is a stub that answers the power-on test | `rtl/gx_snd_stub.sv` | No sound CPU yet; the stub returns the reply the test expects and a heartbeat | Phase 3: the real sound board | The game's RAM check passes with it; nothing else is exercised | visible |
-| Sound-command spin of 800 CPU clocks after a latch write | `rtl/cpu/…_bus.sv:NNN` | Copies MAME's 40 us wait; the real board's mechanism is unknown | A measurement of the latch on hardware | Without it the second byte overwrote the first (commit) | latent |
-| Sound CPU reset held 1,024 clocks | `rtl/….sv:NNN` | MAME's pulse is zero-length; the T80 needs to see it | The measured reset length | A PCB measurement says about one second | latent |
-| Screen timing from one game used for every game | `rtl/video/…crtc.sv` | MAME declares 60 Hz with no comment; the one PCB-verified rate is used for all | Per-game timing from PCB measurement | 0.043% from the verified rate | visible |
--->
+
 
 ## Removed
 

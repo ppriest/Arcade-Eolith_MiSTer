@@ -7,8 +7,8 @@ each against a PCB recording (docs/QS1000_FEATURES.md).
         [--loop off|keyed] [--release loopend|keyoff|exp:MS] [--velocity off|linear] [--balance mame|pcb]
         [--only music|sfx] [--sfx 01a9:01aa]
 
-<wave.txt>: each write to 0x200-0x211 with its 750 kHz tick (Arcade-Vamphalf_MiSTer
-scripts/mame_qs1000_wave.py). --from/--to are seconds of that tick count.
+<wave.txt>: each write to 0x200-0x211 with its 750 kHz tick (scripts/qs1000_capture.py, or
+Arcade-Vamphalf_MiSTer scripts/mame_qs1000_wave.py). --from/--to are seconds of that tick count.
 
 Per voice, as MAME's model (Vamphalf scripts/qs1000_model.py): the voice outputs sample
 floor(t * freq / 2^18) of its descriptor at tick t after key-on, ADPCM addresses counting nibbles from the

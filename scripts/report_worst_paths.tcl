@@ -2,7 +2,7 @@
 # already-compiled database, without a recompile. Run from the directory that
 # holds the database (the repo root for build.sh, build/ for build_staged.py):
 #   quartus_sta -t scripts/report_worst_paths.tcl <revision>
-# The revision is the trailing argument; it defaults to the one below.
+# The revision is the trailing argument; it defaults to the one .qsf in the directory.
 set rev ""
 if {[llength $quartus(args)] > 0} { set rev [lindex $quartus(args) 0] }
 if {$rev eq ""} {

@@ -9,9 +9,9 @@
 --   WT_COIN    frame to insert a coin and then press Start (0 = attract only);
 --              from Start, HOLD is held and PULSE pulsed, so play goes on
 --
--- The scanline comes from time_until_pos, as in capture.lua (0.28x's screen
--- binding has no vpos). Writes are binned by line; per frame the last write
--- line of each region is binned too.
+-- The scanline comes from time_until_pos (0.28x's screen binding has no vpos).
+-- Writes are binned by line; per frame the last write line of each region is
+-- binned too.
 
 local OUT    = os.getenv("WT_OUT")
 local TAPS   = os.getenv("WT_TAPS") or ""

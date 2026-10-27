@@ -141,7 +141,7 @@ e1_pipe u_cpu (
 );
 
 // ---------------------------------------------------------------- memory
-// the board's memory timing, as an experiment (rtl/eo_busws.sv): the memory unit sees the request late
+// the board's memory timing (rtl/eo_busws.sv): the memory unit sees the request late
 wire        mem_bus_req;
 eo_busws u_ws (
 	.clk(clk), .rst(rst), .req(bus_req), .ack(bus_ack), .io(bus_io), .addr(bus_addr[31:29]),

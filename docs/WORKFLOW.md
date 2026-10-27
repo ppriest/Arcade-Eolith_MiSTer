@@ -96,7 +96,7 @@ Two properties that must survive any port:
 - **A stale marker whose pid is gone is cleared automatically.** A crashed tool must not wedge every
   later build.
 
-Every entry point that touches either side calls it: `build_staged.py`, `run_sim.sh`,
+Every entry point that touches either side calls it: `build_staged.py`,
 `read_issp.py`, `memdump.py`, `tracer_readout.py`, and anything else that opens the Blaster.
 `deploy.py` does not and should not — it is scp over the network.
 
@@ -321,10 +321,8 @@ all-zero content is invariant under byte order. Use real content.
 
 ## 10. Simulation
 
-`scripts/run_sim.sh` compiles the RTL and runs one testbench from the repository root, and
-**rebuilds the `work` library every run**. A ModelSim compile killed by a tool timeout leaves
-`work/_lock`, on which every later `vlog`/`vcom` waits silently. A bench that prints nothing has
-usually not run.
+`scripts/run_verilator.sh <tb>` builds and runs one testbench from the repository root, from the
+sources in `sim/<tb>/verilator.files`. A bench that prints nothing has usually not run.
 
 Vendored jotego modules need `+define+SIMULATION +initreg=r+0 +initmem=r+0`: their un-reset
 pipelines are X in a four-state simulator and zero in hardware. That flag has its own trap
@@ -464,8 +462,7 @@ each **done** as it lands.
 | `hwlock.py` | **first**, before any build: section 2 | skill |
 | `build_staged.py` | worktree build at `build/`, refuses dirty tree, gates on slack, instances, macros | skill |
 | `deploy.py` | slack-gated deploy, incrementing `.rbf` numbering, fallbacks on device | skill |
-| `run_sim.sh` | one testbench, fresh `work` library every run, takes the lock | skill |
-| `run_verilator.sh` | the fast second simulator; outside the lock | skill |
+| `run_verilator.sh` | one testbench; outside the lock | skill |
 | `mra.py`, `extract_dips.py`, `validate_mra.py` | verify byte-for-byte, extract DIPs, check every `.mra` | skill |
 | `build_mra.py`, `check_dips.py` | generate every `.mra`; parse-check the DIP blocks | Seta, GX |
 | `extract_romstart.py` | `ROM_START` straight from the driver | skill |

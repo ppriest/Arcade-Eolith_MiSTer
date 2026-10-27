@@ -11,11 +11,9 @@ given. build_mra.py uses parse_ports.
 
 WHY EXTRACT RATHER THAN TYPE
 ----------------------------
-The same argument as scripts/extract_romstart.py, and with a sharper edge: a
-wrong DIP default is not cosmetic. A fresh `.CFG` on MiSTer is all zeroes, so
-whatever the `.mra` declares as the default is what the game boots with -- and
-a wrong DIP byte has silently enabled service mode, and another value hung a
-game outright. Transcribing dozens of switches by hand is a coin flip repeated.
+The same argument as scripts/extract_romstart.py. A wrong DIP default is not
+cosmetic: a fresh `.CFG` on MiSTer is all zeroes, so whatever the `.mra`
+declares as the default is what the game boots with.
 
 WHAT IS PARSED, and what each contributes:
 
@@ -25,8 +23,7 @@ WHAT IS PARSED, and what each contributes:
     PORT_SERVICE_DIPLOC(mask, dflt)     the standard Service Mode switch
     PORT_BIT(mask, ...)                 ignored; it is a control, not a switch
 
-The unused ones matter and are the easy thing to drop: a hand-written table
-that left four of them out produced a default of FF,1D instead of FF,FF.
+The unused ones matter: dropping them changes the default byte.
 
 DEF_STR
 -------
@@ -108,10 +105,8 @@ def sanitise(label):
     label containing a comma shifts every later entry by one -- the OSD then
     shows one setting and the game reads another.
 
-    Several of this driver's bonus-life labels are written "150k, 350k". The
-    comma becomes a slash. That is a display change and nothing else: the mask,
-    the value and the default are untouched, and it happens HERE, once, rather
-    than being left for whoever writes the .mra to notice.
+    The comma becomes a slash: a display change only; the mask, the value and
+    the default are untouched.
     """
     return label.replace(", ", "/").replace(",", "/")
 
@@ -222,11 +217,9 @@ def parse_ports(body, all_blocks, missing, depth=0):
                 last[3].setdefault(("cond", cond), {})[v] = lab
             continue
 
-        # PORT_SERVICE / PORT_SERVICE_DIPLOC -- A REAL DIP THAT LOOKS LIKE
-        # NOTHING. It is not a PORT_DIPNAME, so a parser that only knows
-        # PORT_DIPNAME/PORT_DIPSETTING drops the bit from the switch list AND
-        # from the default byte, shipping it as 0 -- and 0 on an active-low
-        # service bit boots the game into the service menu.
+        # PORT_SERVICE / PORT_SERVICE_DIPLOC: a real switch that is not a
+        # PORT_DIPNAME. Dropped, its bit ships as 0 in the default byte, and 0
+        # on an active-low service bit boots the game into the service menu.
         #
         # Semantics from emu/ioport.cpp's onoff_alloc, not assumed:
         #     field_alloc(IPT_DIPSWITCH, defval, mask, name)

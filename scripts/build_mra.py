@@ -180,7 +180,7 @@ def region_size(body, region):
 DIP_NAME = {"Show Dip-switch Information": "Show DIP Info"}
 
 
-def switches(ports):
+def switches(setname, ports):
     """The DSW1 <switches> lines (MAME's DSW1, bits 0-7) and the default byte, or ([], None)."""
     edips.SRC = str(DRIVER_DIR / "eolith.cpp")
     all_blocks = edips.load()
@@ -348,7 +348,7 @@ def build(setname, sm, write=True):
     btn_names = ",".join(game + ["Start", "Coin", "Pause", "Service Coin", "Service Mode"])
     btn_def = ",".join(["A", "B", "X", "Y"][:len(named)] + ["Start", "Select", "L", "R"])
     title = info["title"]
-    sw, sw_def = switches(info["ports"]) if grad else ([], None)
+    sw, sw_def = switches(setname, info["ports"]) if grad else ([], None)
     sw_xml = ([f'    <switches default="{sw_def:02X}" base="0">', *sw, "    </switches>", ""] if sw else [])
     ee_xml = []
     if setname in EEPROM_DEFAULT:

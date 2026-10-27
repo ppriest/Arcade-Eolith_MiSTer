@@ -56,14 +56,12 @@ QUARTUS_BIN = None
 
 # --- core-specific: edit for this core -------------------------------------
 # Every block that MUST survive to the fitted netlist, by the name Quartus
-# writes into the fit report. A build that passes timing because part of the
-# design was optimised away is the worst kind of green (an undriven clock
-# takes a whole video chain out and the build reports TIMING MET). Slack alone
-# cannot catch that; presence is asserted separately. Add each name in the
-# commit that adds the module it names, so the gate grows with the design.
+# writes into the fit report. A build can pass timing because part of the
+# design was optimised away (an undriven clock takes a whole video chain out
+# and the build reports TIMING MET); slack cannot catch that, so presence is
+# asserted separately. Add each name in the commit that adds the module.
 REQUIRED_INSTANCES = (
-    "hps_io",        # the framework's HPS interface; present from the template on
-    # "fx68k", "sdram", "arcade_video", "Hq2x", "screen_rotate_two", ...
+    "hps_io",
 )
 
 # Macros the design needs defined in the .qsf, and what breaks without each.
@@ -75,11 +73,9 @@ REQUIRED_MACROS = {
 
 # Files the compile expects in the project directory that the repo keeps
 # elsewhere, copied inside the stage before Quartus runs: (source, destination),
-# both relative to the repo root. fx68k's $readmemb looks for its microcode in
-# the directory Quartus runs from, not beside the RTL.
+# both relative to the repo root ($readmem* resolves against the directory
+# Quartus runs from, not beside the RTL).
 STAGE_COPIES = (
-    # ("rtl/cpu/fx68k/microrom.mem", "microrom.mem"),
-    # ("rtl/cpu/fx68k/nanorom.mem", "nanorom.mem"),
 )
 # ---------------------------------------------------------------------------
 
@@ -204,7 +200,6 @@ def main():
         sys.exit("a staged build already appears to be running (%s exists) -- "
                  "wait for it, or delete the marker if it is stale" % marker)
 
-    # Create or update the stage worktree to exactly HEAD.
     if not os.path.isdir(os.path.join(stage, ".git")) and \
        not os.path.isfile(os.path.join(stage, ".git")):
         run(["git", "-C", here, "worktree", "add", "--detach", stage, head])

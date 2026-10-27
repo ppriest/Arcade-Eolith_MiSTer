@@ -9,9 +9,9 @@
 # disagreement with ModelSim is a finding. VHDL modules come in as GHDL Verilog
 # conversions made by scripts/verilator_prep.sh, if the core has one.
 #
-# The bench's sources are listed in sim/<tb>/verilator.files: unlike
-# scripts/run_sim.sh this does not compile all of rtl/, because Verilator
-# parses every file it is given and not all vendored code is clean for it.
+# The bench's sources are listed in sim/<tb>/verilator.files, not all of rtl/:
+# Verilator parses every file it is given and not all vendored code is clean
+# for it.
 # -G arguments (top-level parameter overrides) and +define+ macros go to the
 # build; the rest go to the run. Output is in obj_verilator/<tb>/ (git-ignored), not
 # build/, which is scripts/build_staged.py's Quartus worktree.

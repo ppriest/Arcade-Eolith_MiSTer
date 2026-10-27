@@ -3,14 +3,14 @@
 
 The bring-up technique this supports is documented in docs/LESSONS_LEARNED.md:
 with no JTAG available, internal state is driven straight onto VGA_R/G/B, a
-screenshot is pulled with scripts/mister_hw_test.py, and the pixels are read
-back here. Each pixel carries 24 bits (R<<16 | G<<8 | B).
+screenshot is pulled with scripts/hw.py, and the pixels are read back here.
+Each pixel carries 24 bits (R<<16 | G<<8 | B).
 
-There is deliberately no PIL/numpy dependency -- neither is installed in this
-environment -- so the PNG is decoded by hand (zlib + the five filter types).
-Only the 8-bit truecolour PNGs MiSTer's screenshot API produces are supported.
+No PIL/numpy dependency: the PNG is decoded by hand (zlib + the five filter
+types). Only the 8-bit truecolour PNGs MiSTer's screenshot API produces are
+supported.
 
-Modes, matching the three tap shapes used so far:
+Modes:
 
   counters   Histogram of distinct colours. For taps that drive a few live
              counters/flags, where the whole screen is one or a handful of
@@ -19,11 +19,10 @@ Modes, matching the three tap shapes used so far:
 
   scanline   One value per scanline, read from mid-line. For a BRAM trace
              indexed by vcnt, where each scanline shows one captured entry.
-             This is the useful one for bus traces.
 
   raster     Every pixel in raster order, run-length compressed. For a tap
              driving a live value that changes faster than the frame, giving
-             ~71680 consecutive samples in one screenshot.
+             width x height consecutive samples in one screenshot.
 
 Examples:
   python scripts/decode_debug_screenshot.py shot.png --mode counters

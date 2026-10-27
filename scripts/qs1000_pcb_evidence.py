@@ -5,7 +5,8 @@
     python scripts/qs1000_pcb_evidence.py <set> <wave.txt> <recording.wav> --from S --to S --rec-at S [S ...]
         [--sfx 01a9:01aa] [--per-sample]
 
-<wave.txt>: MAME's register writes with 750 kHz ticks (Arcade-Vamphalf_MiSTer scripts/mame_qs1000_wave.py);
+<wave.txt>: MAME's register writes with 750 kHz ticks (scripts/qs1000_capture.py, or Arcade-Vamphalf_MiSTer
+scripts/mame_qs1000_wave.py);
 --from/--to: the stretch of it to test (seconds of ticks), music only (table prefixes in --sfx dropped);
 --rec-at: where that stretch starts in the recording, roughly (each is refined by spectral-flux correlation).
 

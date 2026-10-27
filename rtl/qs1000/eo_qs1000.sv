@@ -2,8 +2,9 @@
 // 8052 on the 24 MHz oscillator, the main CPU's sound latch, and the wavetable engine reading the sample
 // ROM from SDRAM. With `grad`, as eolith.cpp wires it (343-363, 727-732): commands arrive on the 8052's
 // RxD from the sound CPU (eo_sndcpu), P1 reads 1, P2 0, P3 only RxD (qs1000_p3_r), and the data space
-// is the RAM and the voice registers alone (qs1000_data_map; no bank installed). After Arcade-Vamphalf_MiSTer's rtl/qs1000/vh_qs1000.sv (the same chip on another
-// board); the 8052 and the engine are its vendored modules, unchanged.
+// is the RAM and the voice registers alone (qs1000_data_map; no bank installed). After
+// Arcade-Vamphalf_MiSTer's rtl/qs1000/vh_qs1000.sv (the same chip on another board); the 8052 and the
+// engine are its vendored modules, jt8052 with timer 2 added here ([EO], docs/HACKS.md).
 //
 //   8052 program  0x0000-0x7fff  the first 32 KB of bgm.u84, in block RAM (qs1000_prg_map); above, 0xff
 //   8052 data     0x0000-0x00ff  RAM

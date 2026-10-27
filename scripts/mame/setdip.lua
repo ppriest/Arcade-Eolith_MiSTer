@@ -2,9 +2,9 @@
 --
 -- Driven by scripts/mame_capture.py as PASS 1 of a --dip capture. MAME writes
 -- cfg/<set>.cfg on a clean exit, and applies it at POWER-ON on the next launch
--- -- before any autoboot script runs. That is the whole point: setting a DIP
--- from the capture script itself is too late for a game that reads the
--- switches once during its own initialisation, which is most of them.
+-- -- before any autoboot script runs. Setting a DIP from the capture script
+-- itself is too late for a game that reads the switches once during its own
+-- initialisation.
 --
 -- MAME writes a DIPSWITCH entry only when the wanted value is non-zero, so a
 -- switch whose "On" is 0 persists nothing. This script therefore also reports

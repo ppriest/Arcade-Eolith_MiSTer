@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Diff the RTL CPU's boot against MAME's. Phase 0.
+"""Diff the RTL CPU's boot against MAME's.
 
     python scripts/compare_boot_trace.py replay  <set>   # MAME's I/O reads -> replay file
     python scripts/compare_boot_trace.py compare <set>   # RTL trace vs MAME trace
@@ -58,8 +58,7 @@ def merge_halves(rows):
     """Join two consecutive accesses to the same dword into one.
 
     A CPU narrower than the bus splits a wide access in two, and MAME's tap may
-    report one side split and the other whole (on KonamiGX: instruction fetches
-    split, data accesses whole). Unmerged, the traces fall one entry out of step
+    report one side split and the other whole. Unmerged, the traces fall one entry out of step
     at every such access, which also skews the write-count comparison window.
     Both sides are normalised the same way: an adjacent pair with the same
     direction, the same aligned address and disjoint lanes becomes one access.
